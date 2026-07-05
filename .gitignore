@@ -4,10 +4,14 @@ venv/
 __pycache__/
 *.pyc
 
-# Generated outputs (reproduce with cuvs_scan.py)
+# Generated outputs in the working dir (reproduce with cuvs_scan.py)
 *.db
 *.csv
 cuvs_dashboard.html
+
+# ...but DO track the published snapshot committed under results/
+!results/
+!results/**
 
 # macOS
 .DS_Store

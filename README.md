@@ -83,6 +83,15 @@ xdg-open cuvs_dashboard.html    # Linux
 
 ---
 
+## Example results
+
+A prebuilt snapshot (2026-07-05: **413 evidence rows across 219 repos**) is committed under
+[`results/`](results/) — the SQLite DB, both CSVs, and the dashboard — so you can browse real output without
+running anything. See [`results/README.md`](results/README.md) for a description of each file. Open
+`results/cuvs_dashboard.html` in a browser to explore it interactively.
+
+---
+
 ## Usage — individual stages
 
 Every stage below operates on an **existing DB**, so you can re-export without re-scanning. Enrichment is
