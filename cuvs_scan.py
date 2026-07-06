@@ -217,9 +217,36 @@ def collect_github_code(terms: Iterable[Term], sleep: float = 6.0) -> Iterable[H
         time.sleep(sleep)  # code search: strict secondary rate limits
 
 
+# Signal-quality gates for issue/PR hits (see collect_github_issues_prs).
+MAINTAINER_ASSOC = {"OWNER", "MEMBER", "COLLABORATOR"}  # author speaks for the project
+SERIOUS_PR_FILES = 3   # open PR from a non-maintainer must touch >= this many files
+
+
+def _pr_workload(repo: str, number: int) -> tuple[int, int] | None:
+    """Fetch (changed_files, additions) for one PR — search results omit them.
+       One extra API call; returns None if the detail can't be fetched."""
+    try:
+        r = requests.get(f"{GITHUB_API}/repos/{repo}/pulls/{number}",
+                         headers=_gh_headers(), timeout=30)
+    except Exception:
+        return None
+    if r.status_code != 200:
+        return None
+    j = r.json()
+    return int(j.get("changed_files", 0)), int(j.get("additions", 0))
+
+
 def collect_github_issues_prs(terms: Iterable[Term], sleep: float = 3.0) -> Iterable[Hit]:
-    """GitHub issue/PR search. PR->under_integration, issue->proposed.
-       Merged PR is upgraded to integrated."""
+    """GitHub issue/PR search, gated on author authority, PR outcome, and PR size
+       so a stranger's "sounds exciting" issue doesn't count as project intent:
+
+         merged PR                                          -> integrated
+         open PR by a maintainer, OR touching >= SERIOUS_PR_FILES files
+                                                            -> under_integration
+         maintainer-opened, still-open issue                -> proposed
+         external issues / trivial external PRs /
+             closed-unmerged PRs                            -> dropped
+    """
     for t in terms:
         if t.precision != "HIGH":
             continue  # keep issue search precise
@@ -237,12 +264,31 @@ def collect_github_issues_prs(terms: Iterable[Term], sleep: float = 3.0) -> Iter
         for item in r.json().get("items", []):
             full = _repo_full_name(item)
             org = full.split("/")[0].lower()
+            assoc = (item.get("author_association") or "NONE").upper()
+            maintainer = assoc in MAINTAINER_ASSOC
+            state = item.get("state", "open")
             is_pr = "pull_request" in item
+
             if is_pr:
-                merged = item.get("pull_request", {}).get("merged_at")
-                maturity = "integrated" if merged else "under_integration"
+                merged = bool(item.get("pull_request", {}).get("merged_at"))
+                if merged:
+                    maturity, work = "integrated", ""
+                elif state == "closed":
+                    continue  # closed without merging -> rejected/abandoned
+                else:
+                    fa = _pr_workload(full, item["number"]) if item.get("number") else None
+                    n_files, adds = fa if fa else (0, 0)
+                    if not (maintainer or n_files >= SERIOUS_PR_FILES):
+                        continue  # external drive-by with little work -> noise
+                    maturity = "under_integration"
+                    work = f", {n_files}f/+{adds}"
+                note = f"PR [{assoc}{work}]: {t.q}"
             else:
+                if not maintainer or state != "open":
+                    continue  # only a maintainer's open issue is real project intent
                 maturity = "proposed"
+                note = f"issue [{assoc}]: {t.q}"
+
             yield Hit(
                 library=full,
                 source="github_issue_pr",
@@ -250,7 +296,7 @@ def collect_github_issues_prs(terms: Iterable[Term], sleep: float = 3.0) -> Iter
                 precision=t.precision,
                 first_party=org in FIRST_PARTY_ORGS,
                 evidence_url=item.get("html_url", ""),
-                note=f"{'PR' if is_pr else 'issue'}: {t.q}",
+                note=note,
             )
         time.sleep(sleep)
 
