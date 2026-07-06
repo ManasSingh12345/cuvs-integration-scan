@@ -1,35 +1,33 @@
 library,github_stars,maturity,first_party,high_evidence_count,sources,example_evidence_url,note,collected_at
-elastic/elasticsearch,77443,integrated,no,2,github_code,https://github.com/elastic/elasticsearch/blob/7d618c10a4bd701b88f488b9d9f4ad6ec9cab082/docs/reference/elasticsearch/mapping-reference/_snippets/docker-gpu-indexing.md,code match: libcuvs,2026-07-05
-facebookresearch/faiss,40455,integrated,no,11,github_code|github_issue_pr,https://github.com/facebookresearch/faiss/blob/42dc2862c293b7c7f788be686cf6c9ac93abf6cf/faiss/python/CMakeLists.txt,code match: libcuvs,2026-07-05
+facebookresearch/faiss,40455,integrated,no,9,github_code|github_issue_pr,https://github.com/facebookresearch/faiss/blob/42dc2862c293b7c7f788be686cf6c9ac93abf6cf/faiss/python/CMakeLists.txt,code match: libcuvs,2026-07-05
 lance-format/lance,6756,integrated,no,4,github_issue_pr,https://github.com/lance-format/lance/pull/2932,PR [CONTRIBUTOR]: cuvs-cu11,2026-07-05
-rapidsai/cuml,5220,integrated,yes,3,github_code|github_issue_pr,https://github.com/rapidsai/cuml/blob/857cc5aa4c13eb3e641bacc34c49f0f1d4eab7b0/cpp/src/kde/kde.cu,code match: cuvs::,2026-07-05
+rapidsai/cuml,5220,integrated,yes,2,github_issue_pr,https://github.com/rapidsai/cuml/pull/8250,PR [MEMBER]: libcuvs,2026-07-05
 NVIDIA/GenerativeAIExamples,4104,integrated,yes,1,github_code,https://github.com/NVIDIA/GenerativeAIExamples/blob/da30b390663f39e01be7e8b5304945a4e43052ca/community/Azure-Serverless-GPU-Embedding/Dockerfile.worker,code match: cuvs-cu11,2026-07-05
-introlab/rtabmap,3864,integrated,no,1,github_code,https://github.com/introlab/rtabmap/blob/cb34c4bd37413fb54a9376b4b6a2ec7d60f54565/CMakeLists.txt,code match: find_package(cuvs,2026-07-05
 microsoft/PhiCookBook,3762,integrated,no,1,github_code,https://github.com/microsoft/PhiCookBook/blob/00702c9adfcd95b68006b02a8c778efa2b46dc54/translations/pcm/md/02.Application/10.ReasoningVision/Phi_4_reasoning_vision_15b_Math.ipynb,code match: libcuvs,2026-07-05
-rapidsai/cugraph,2204,integrated,yes,4,github_code|github_issue_pr,https://github.com/rapidsai/cugraph/blob/783e58c90f9cbc4350c2ccd384de86533c7f0c26/cpp/src/community/legacy/spectral_clustering.cu,code match: cuvs::,2026-07-05
-matrixorigin/matrixone,1856,integrated,no,2,github_code|github_issue_pr,https://github.com/matrixorigin/matrixone/blob/5908c6a092ebc95133c7adf6edd56c9c41395677/cgo/cuvs/adhoc.hpp,code match: cuvs::,2026-07-05
-nvidia-isaac/cuVSLAM,1593,integrated,no,1,github_code,https://github.com/nvidia-isaac/cuVSLAM/blob/05588424d0440ac80af21080fd1650408fd9282a/python/utils.py,code match: libcuvs,2026-07-05
+rapidsai/cugraph,2204,integrated,yes,2,github_issue_pr,https://github.com/rapidsai/cugraph/pull/5479,PR [MEMBER]: find_package(cuvs,2026-07-05
+emacs-ng/emacs-ng,1810,integrated,no,1,github_code,https://github.com/emacs-ng/emacs-ng/blob/d90af7b852caa1956c584d7c85ecfff605749e0b/configure.ac,code match: import cuvs,2026-07-05
 weaviate/recipes,939,integrated,no,1,github_code,https://github.com/weaviate/recipes/blob/3b84b1789cb1632af8d1aeaf2a117f96a45d05da/integrations/compute-infrastructure/modal/Modal-cuVS.py,code match: cuvs-cu12,2026-07-05
-NVIDIA/cuvs,800,integrated,yes,28,github_code|github_issue_pr,https://github.com/NVIDIA/cuvs/blob/d40ee2dde8764085659d40756367dcfccda31d7e/python/cuvs/CMakeLists.txt,code match: find_package(cuvs,2026-07-05
-nv-tlabs/PartField,437,integrated,no,1,github_code,https://github.com/nv-tlabs/PartField/blob/373025dbd283bb44cc4a6dc78c99994dbc91de32/environment.yml,code match: cuvs-cu12,2026-07-05
+NVIDIA/cuvs,800,integrated,yes,26,github_code|github_issue_pr,https://github.com/NVIDIA/cuvs/blob/d40ee2dde8764085659d40756367dcfccda31d7e/python/cuvs/CMakeLists.txt,code match: find_package(cuvs,2026-07-05
+nv-tlabs/PartField,438,integrated,no,1,github_code,https://github.com/nv-tlabs/PartField/blob/373025dbd283bb44cc4a6dc78c99994dbc91de32/environment.yml,code match: cuvs-cu12,2026-07-05
+aquamacs-emacs/aquamacs-emacs,426,integrated,no,1,github_code,https://github.com/aquamacs-emacs/aquamacs-emacs/blob/5a2833896341ea02b65ef7ca145a2de3b5f82f30/admin/ChangeLog.1,code match: import cuvs,2026-07-05
 zilliztech/knowhere,371,integrated,no,2,github_issue_pr|readme_self,https://github.com/zilliztech/knowhere/blob/main/README.md,README cue='default': …top-level `Makefile` provides a unified build interface. Run `make help` to see all targets and flags. ```bash # CPU rel…,2026-07-05
 rapidsai/node,211,integrated,yes,1,github_code,https://github.com/rapidsai/node/blob/312c46831c6839af31efb1a7d1994bfd07e1a94a/modules/core/cmake/Modules/ConfigureCUVS.cmake,code match: libcuvs,2026-07-05
 PacktPublishing/Mastering-NLP-from-Foundations-to-LLMs,128,integrated,no,1,github_code,https://github.com/PacktPublishing/Mastering-NLP-from-Foundations-to-LLMs/blob/b94eecd8e52ac8da36cd059cb8428cced86a739f/Chapter9_notebooks/requirements__Ch9_RAGLlamaIndex_Prompt_Compression.txt,code match: cuvs-cu12,2026-07-05
 ITMO-CODE-AI/GaMAC,115,integrated,no,1,github_code,https://github.com/ITMO-CODE-AI/GaMAC/blob/27818ba833f39f11abbd1f4e45a0f96e84a613c9/pyproject.toml,code match: cuvs-cu12,2026-07-05
 marius-team/quake,76,integrated,no,1,github_code,https://github.com/marius-team/quake/blob/0651c88c5c71343191ef06ee4ed292cb4a01e1aa/CMakeLists.txt,code match: find_package(cuvs,2026-07-05
-double-ai/doubleGraph,62,integrated,no,2,github_code,https://github.com/double-ai/doubleGraph/blob/08441510d63149090cf8ca5cd3edfa21a0631a9f/build_in_docker/build_libcuvs_sm89.sh,code match: libcuvs,2026-07-05
+double-ai/doubleGraph,62,integrated,no,1,github_code,https://github.com/double-ai/doubleGraph/blob/08441510d63149090cf8ca5cd3edfa21a0631a9f/build_in_docker/build_libcuvs_sm89.sh,code match: libcuvs,2026-07-05
 rapidsai-community/rapidsai-csp-utils,40,integrated,no,1,github_issue_pr,https://github.com/rapidsai-community/rapidsai-csp-utils/pull/135,PR [CONTRIBUTOR]: cuvs-cu12,2026-07-05
 AIS-SNU/PathWeaver,21,integrated,no,1,github_code,https://github.com/AIS-SNU/PathWeaver/blob/c0804a5f46fd603794f4ce6205956a35ca46890e/environment.yaml,code match: cuvs-cu12,2026-07-05
 ncn-foreigners/BlockingPy,20,integrated,no,1,github_code,https://github.com/ncn-foreigners/BlockingPy/blob/b7185f00a65289c022afdebae99ba0ed156386e0/docs/html/_sources/gpu.md.txt,code match: libcuvs,2026-07-05
 Cellverse/cryouni,19,integrated,no,1,github_code,https://github.com/Cellverse/cryouni/blob/dcf685f01627c4584925751313da53c40ca35dcb/install.sh,code match: cuvs-cu12,2026-07-05
+Lotfollahi-lab/CellDISECT,19,integrated,no,1,github_code,https://github.com/Lotfollahi-lab/CellDISECT/blob/117bae82acab698581f5dec5690d17d9eb6b6a28/docs/source/index.rst,code match: import cuvs,2026-07-05
 CaicedoLab/CHAMMI-75,15,integrated,no,1,github_code,https://github.com/CaicedoLab/CHAMMI-75/blob/b84a4ec9ac19d933e1290afc5abfe6451423cac4/models/simclr/conda_packages.txt,code match: cuvs-cu11,2026-07-05
 DBGroup-SUSTech/multi-vector-retrieval,15,integrated,no,1,github_code,https://github.com/DBGroup-SUSTech/multi-vector-retrieval/blob/68735eb78068a9c4d51a44ae53f885a81500249f/CMakeLists.txt,code match: find_package(cuvs,2026-07-05
-RoboConan/RoboConan,12,integrated,no,2,github_code|readme_self,https://github.com/RoboConan/RoboConan/blob/63a9c87ce2a8e7ab206d56674bf17fec0b5f0c85/recipes/cuvs/all/conanfile.py,code match: cuvs::,2026-07-05
-SJTU-IPADS/GPU-Graph-ANN,10,integrated,no,3,github_code,https://github.com/SJTU-IPADS/GPU-Graph-ANN/blob/c5ba41ed87a066aaefdab9e412e528853dd11e65/docs/source/build.rst,code match: cuvs-cu11,2026-07-05
+SJTU-IPADS/GPU-Graph-ANN,10,integrated,no,2,github_code,https://github.com/SJTU-IPADS/GPU-Graph-ANN/blob/c5ba41ed87a066aaefdab9e412e528853dd11e65/docs/source/build.rst,code match: cuvs-cu11,2026-07-05
 saltsystemslab/JasperGPUANNS,9,integrated,no,1,github_code,https://github.com/saltsystemslab/JasperGPUANNS/blob/e1423d220e359caefb5f6b43cafa2ef59a1f7477/CMakeLists.txt,code match: find_package(cuvs,2026-07-05
 Smile-SA/overlay_dx,8,integrated,no,1,github_code,https://github.com/Smile-SA/overlay_dx/blob/4b2865045d010fcd77c3c24d752decd1f0fa520a/requirements.txt,code match: cuvs-cu11,2026-07-05
 opensearch-project/remote-vector-index-builder,8,integrated,no,1,github_code,https://github.com/opensearch-project/remote-vector-index-builder/blob/3042e4d9911bd5f207430fdc343897c1cb809bb7/base_image/build_scripts/Dockerfile,code match: libcuvs,2026-07-05
-runcaptain/compass,7,integrated,no,1,github_code,https://github.com/runcaptain/compass/blob/55697fba1da10405e25024ae1b283e26cbb8bef5/crates/compass-vector-gpu/src/lib.rs,code match: cuvs::,2026-07-05
+STEPBible/stepmobile,7,integrated,no,1,github_code,https://github.com/STEPBible/stepmobile/blob/91bdfa2ccbdade26bf3be5d9de0e32b9e98a045f/src/Constants.ts,code match: import cuvs,2026-07-05
 ROCm-DS/hipVS,6,integrated,no,3,github_code,https://github.com/ROCm-DS/hipVS/blob/87877f15fe6fdd6525730385e9474117ade6ecb3/python/libcuvs/libcuvs/load.py,code match: libcuvs,2026-07-05
 CASTLE-ai/castle-ai,5,integrated,no,1,github_code,https://github.com/CASTLE-ai/castle-ai/blob/185caf4113cb2802b65d037f9eaf20ac10d09331/INSTALLATION.md,code match: cuvs-cu12,2026-07-05
 conda-forge/faiss-split-feedstock,5,integrated,no,1,github_code,https://github.com/conda-forge/faiss-split-feedstock/blob/a3690e15c8a70b3679e4c965f6d579394fd7ca0d/recipe/patches/0008-don-t-hide-faiss-gpu-symbols-temporarily-install-fai.patch,code match: find_package(cuvs,2026-07-05
@@ -41,16 +39,13 @@ ImperialCollegeLondon/cardiac_motion_signatures,2,integrated,no,1,github_code,ht
 lance-format/lance-cuvs,2,integrated,no,4,github_code|github_issue_pr,https://github.com/lance-format/lance-cuvs/blob/179ef29c8ea14cdda011c49f5a8b2c0a5ea0b674/python/lance_cuvs/_loader.py,code match: cuvs-cu12,2026-07-05
 teg-iitr/Traffic-Eye,2,integrated,no,1,github_code,https://github.com/teg-iitr/Traffic-Eye/blob/751eb00ad57ab0e1eddf40ae1049934097623e64/Requirements.txt,code match: cuvs-cu12,2026-07-05
 NewAILab/AstroClip,1,integrated,no,1,github_code,https://github.com/NewAILab/AstroClip/blob/a839f5a485b03f0d5f7d1bff11f27582258be1de/environment.yml,code match: cuvs-cu11,2026-07-05
+SearchScale/vectorsearch-benchmarks,0,integrated,no,2,github_code|github_issue_pr,https://github.com/SearchScale/vectorsearch-benchmarks/blob/9e818449cc37dcade12ffff5a83ba23519629943/solr-benchmarks.sh,code match: import cuvs,2026-07-05
 aboutcode-data/purls-pypi-0576,0,integrated,no,1,github_code,https://github.com/aboutcode-data/purls-pypi-0576/blob/fea378dab8716a0edfbe4190f182ab85912516e4/pypi-0618/cuvs-cu11/purls.yml,code match: cuvs-cu11,2026-07-05
-ictrektech/knowhere,0,integrated,no,1,github_code,https://github.com/ictrektech/knowhere/blob/f943a8e7f51a2b245e72f3c2765a66c50842f276/cmake/libs/libcuvs.cmake,code match: cuvs::,2026-07-05
 quadbio/cell-type-annotation,0,integrated,no,1,github_issue_pr,https://github.com/quadbio/cell-type-annotation/pull/40,PR [MEMBER]: cuvs-cu12,2026-07-05
-volcengine/OpenViking,26341,under_integration,no,1,github_issue_pr,https://github.com/volcengine/OpenViking/pull/2974,"PR [NONE, 35f/+7945]: CAGRA",2026-07-05
 sirius-db/sirius,1009,under_integration,no,1,github_issue_pr,https://github.com/sirius-db/sirius/pull/912,"PR [CONTRIBUTOR, 27f/+4066]: libcuvs",2026-07-05
 NVIDIA/cuopt,964,under_integration,yes,1,github_issue_pr,https://github.com/NVIDIA/cuopt/pull/1192,"PR [COLLABORATOR, 60f/+28170]: #include ""cuvs",2026-07-05
-triton-inference-server/tutorials,844,under_integration,no,1,github_issue_pr,https://github.com/triton-inference-server/tutorials/pull/149,"PR [NONE, 6f/+1858]: CAGRA",2026-07-05
 NVIDIA/cuvs-lucene,8,under_integration,yes,4,github_issue_pr,https://github.com/NVIDIA/cuvs-lucene/pull/153,"PR [CONTRIBUTOR, 29f/+501]: #include ""cuvs",2026-07-05
 ansible/aap-rag-content,5,under_integration,no,1,github_issue_pr,https://github.com/ansible/aap-rag-content/pull/350,"PR [CONTRIBUTOR, 3f/+22]: #include ""cuvs",2026-07-05
-SearchScale/vectorsearch-benchmarks,0,under_integration,no,1,github_issue_pr,https://github.com/SearchScale/vectorsearch-benchmarks/pull/23,"PR [NONE, 8f/+450]: cuvs::",2026-07-05
 TorchDR/TorchDR,206,proposed,no,1,github_issue_pr,https://github.com/TorchDR/TorchDR/issues/256,issue [COLLABORATOR]: from cuvs,2026-07-05
 pilotspace/moon,2,proposed,no,1,github_issue_pr,https://github.com/pilotspace/moon/issues/29,issue [COLLABORATOR]: from cuvs,2026-07-05
-rapidsai/build-planning,1,proposed,yes,2,github_issue_pr,https://github.com/rapidsai/build-planning/issues/285,issue [MEMBER]: import cuvs,2026-07-05
+rapidsai/build-planning,1,proposed,yes,1,github_issue_pr,https://github.com/rapidsai/build-planning/issues/289,issue [MEMBER]: cuvs-cu12,2026-07-05

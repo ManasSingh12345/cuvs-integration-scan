@@ -29,14 +29,13 @@ Individual stages, all off an existing DB: `--report`, `--csv [PREFIX]`, `--dash
 | 1. Search | Query GitHub code, issues/PRs, READMEs, and deps.dev for cuVS terms (`import cuvs`, `cuvs::`, `find_package(cuvs)`, `libcuvs`, `cuvs-cu11/12`, `pylibcuvs`, `CAGRA`). | candidate repos, each with an evidence URL |
 | 2. Classify maturity | Map *where* the match was found to a tier, gated by who filed it and how much work it is. | code / declared dep → `integrated`; merged PR → `integrated`; open PR by a maintainer **or touching ≥ 3 files** → `under_integration`; maintainer-opened issue → `proposed`; README → by wording. External issues, trivial or closed-unmerged PRs are dropped. |
 | 3. Enrich | One GitHub API call per repo. | GitHub stars + fork flag |
-| 4. Score confidence | Judge how cuVS-specific the match is. | **HIGH** (cuVS symbol) vs **LOW** (generic / RAFT predecessor); **strong** (real symbol or README status) vs **keyword** (bare `CAGRA`) |
-| 5. Filter & collapse | Keep the trustworthy set. | drop forks, user-owned repos (organization-default), and matches inside a *vendored copy* of another lib; keep HIGH-precision; strict cut also drops keyword-only; one row per repo at its highest tier |
+| 4. Score & verify | Judge how cuVS-specific the match is, and reject collisions. | **HIGH** (cuVS symbol) vs **LOW** (generic / RAFT predecessor); verify the token is real, not a substring (`cuvs` inside `cuvslam`); **strong** (real symbol / README status) vs **keyword** (bare `CAGRA`, which only corroborates) |
+| 5. Filter & collapse | Keep the trustworthy set. | drop forks, user-owned repos (org-default), vendored-copy matches, and repos whose only signal is a bare `CAGRA`; keep HIGH-precision with a real cuVS signal; one row per repo at its highest tier |
 
 ## Outputs
 
 - **`cuvs.db`** — every hit (table `hits`), one row per repo / source / evidence URL.
-- **`cuvs_high_confidence.csv`** — organization-owned, HIGH-precision, non-fork; one row per repo at its highest tier.
-- **`cuvs_high_confidence_strict.csv`** — same, minus bare-`CAGRA` keyword noise (recommended).
+- **`cuvs_high_confidence.csv`** — the curated set: organization-owned, HIGH-precision, non-fork repos with a real cuVS signal (substring collisions and CAGRA-only matches excluded); one row per repo at its highest tier.
 - **`cuvs_dashboard.html`** — standalone interactive dashboard.
 
 A prebuilt snapshot is in [`results/`](results/).

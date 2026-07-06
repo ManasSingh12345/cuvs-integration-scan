@@ -186,12 +186,35 @@ def _repo_full_name(item: dict) -> str:
     return m.group(1) if m else "unknown/unknown"
 
 
+# Request matched snippets so we can reject substring collisions post-hoc.
+_TEXT_MATCH_ACCEPT = "application/vnd.github.text-match+json"
+
+
+def _match_is_genuine(term: str, item: dict) -> bool:
+    """Reject substring collisions (e.g. 'libcuvs' matching 'libcuvslam' in
+       nvidia-isaac/cuVSLAM). The core token must not run straight into more
+       letters — 'libcuvs', '/cuvs', 'cuvs-cu12', 'cuvs::' pass; 'cuvslam' fails.
+       Verifies against the search API's text_matches fragments."""
+    tl = term.lower()
+    core = ("cuvs" if "cuvs" in tl else
+            "cagra" if "cagra" in tl else
+            "raft" if "raft" in tl else None)
+    if core is None:
+        return True  # nothing collision-prone to guard (e.g. 'IVF-PQ GPU')
+    frags = [m.get("fragment", "") for m in item.get("text_matches", [])]
+    if not frags:
+        return True  # no fragment metadata -> keep (favor recall over precision)
+    pat = re.compile(core + r"(?![A-Za-z])", re.IGNORECASE)
+    return any(pat.search(f) for f in frags)
+
+
 def collect_github_code(terms: Iterable[Term], sleep: float = 6.0) -> Iterable[Hit]:
     """GitHub code search -> INTEGRATED (symbol present on a branch)."""
+    headers = {**_gh_headers(), "Accept": _TEXT_MATCH_ACCEPT}
     for t in terms:
         url = f"{GITHUB_API}/search/code?q={requests.utils.quote(t.q)}&per_page=30"
         try:
-            r = requests.get(url, headers=_gh_headers(), timeout=30)
+            r = requests.get(url, headers=headers, timeout=30)
         except Exception as e:
             print(f"[github_code] {t.q!r} error: {e}", file=sys.stderr)
             continue
@@ -204,6 +227,8 @@ def collect_github_code(terms: Iterable[Term], sleep: float = 6.0) -> Iterable[H
             time.sleep(sleep)
             continue
         for item in r.json().get("items", []):
+            if not _match_is_genuine(t.q, item):
+                continue  # substring collision, e.g. libcuvs inside libcuvslam
             full = _repo_full_name(item)
             org = full.split("/")[0].lower()
             yield Hit(
@@ -248,13 +273,14 @@ def collect_github_issues_prs(terms: Iterable[Term], sleep: float = 3.0) -> Iter
          external issues / trivial external PRs /
              closed-unmerged PRs                            -> dropped
     """
+    headers = {**_gh_headers(), "Accept": _TEXT_MATCH_ACCEPT}
     for t in terms:
         if t.precision != "HIGH":
             continue  # keep issue search precise
         q = f'{t.q} in:title,body'
         url = f"{GITHUB_API}/search/issues?q={requests.utils.quote(q)}&per_page=30"
         try:
-            r = requests.get(url, headers=_gh_headers(), timeout=30)
+            r = requests.get(url, headers=headers, timeout=30)
         except Exception as e:
             print(f"[github_issues] {t.q!r} error: {e}", file=sys.stderr)
             continue
@@ -263,6 +289,8 @@ def collect_github_issues_prs(terms: Iterable[Term], sleep: float = 3.0) -> Iter
             time.sleep(sleep)
             continue
         for item in r.json().get("items", []):
+            if not _match_is_genuine(t.q, item):
+                continue  # substring collision, e.g. libcuvs inside libcuvslam
             full = _repo_full_name(item)
             org = full.split("/")[0].lower()
             assoc = (item.get("author_association") or "NONE").upper()
@@ -647,7 +675,9 @@ def export_csvs(conn: sqlite3.Connection, prefix: str = "cuvs_high_confidence") 
         stars = d["github_stars"] if isinstance(d["github_stars"], int) else -1
         return (-d["rank"], -stars, d["library"])
 
-    ranked = sorted(libs.values(), key=sort_key)
+    # CAGRA corroborates but can't stand alone: keep only repos with a real
+    # cuVS signal (for HIGH hits, that is exactly d["strong"]).
+    ranked = sorted((d for d in libs.values() if d["strong"]), key=sort_key)
 
     def write(path: str, rows: list[dict]) -> None:
         with open(path, "w", newline="") as f:
@@ -665,12 +695,9 @@ def export_csvs(conn: sqlite3.Connection, prefix: str = "cuvs_high_confidence") 
                     d["note"], d["collected_at"],
                 ])
 
-    strong = [d for d in ranked if d["strong"]]
     write(f"{prefix}.csv", ranked)
-    write(f"{prefix}_strict.csv", strong)
-    print(f"[csv] {prefix}.csv: {len(ranked)} libraries (HIGH-precision, org-owned, non-fork)")
-    print(f"[csv] {prefix}_strict.csv: {len(strong)} libraries "
-          f"({len(ranked) - len(strong)} CAGRA-keyword-only dropped)")
+    print(f"[csv] {prefix}.csv: {len(ranked)} repos "
+          f"(org-owned, HIGH-precision, non-fork, real cuVS signal; CAGRA-only excluded)")
 
 
 # --------------------------------------------------------------------------- #
@@ -695,7 +722,7 @@ def _aggregate_libraries(conn: sqlite3.Connection) -> list[dict]:
             d = libs[lib] = {"lib": lib, "tier": mat, "stars": None, "fp": False,
                              "fork": False, "org": False, "quality": "weak", "ev": 0,
                              "sources": set(), "url": url, "note": note or "",
-                             "_score": (-1, -1, -1)}
+                             "_score": (-1, -1, -1), "_hascore": False}
         d["ev"] += 1
         d["sources"].add(src)
         if stars is not None:
@@ -709,12 +736,17 @@ def _aggregate_libraries(conn: sqlite3.Connection) -> list[dict]:
         strong = prec == "HIGH" and _hit_is_strong(note, src)
         if strong:
             d["quality"] = "strong"
+        # CAGRA corroborates but can't stand alone: repo needs >=1 non-CAGRA signal
+        if strong or "cagra" not in (note or "").lower():
+            d["_hascore"] = True
         score = (TIER_RANK[mat], 1 if strong else 0, _SRC_PRIORITY.get(src, 0))
         if score > d["_score"]:
             d.update(_score=score, tier=mat, url=url, note=(note or ""))
     out = []
     for d in libs.values():
         d.pop("_score", None)
+        if not d.pop("_hascore", False):
+            continue  # sole signal was a bare CAGRA keyword -> drop the repo
         d["sources"] = sorted(d["sources"])
         out.append(d)
     return out
