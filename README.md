@@ -22,6 +22,16 @@ open cuvs_dashboard.html
 Individual stages, all off an existing DB: `--report`, `--csv [PREFIX]`, `--dashboard [PATH]`, `--enrich`,
 `--no-stubs`.
 
+## How repos are identified
+
+| Step | What happens | Signal → result |
+|------|--------------|-----------------|
+| 1. Search | Query GitHub code, issues/PRs, READMEs, and deps.dev for cuVS terms (`import cuvs`, `cuvs::`, `find_package(cuvs)`, `libcuvs`, `cuvs-cu11/12`, `pylibcuvs`, `CAGRA`). | candidate repos, each with an evidence URL |
+| 2. Classify maturity | Map *where* the match was found to a tier. | code / declared dep → `integrated`; open PR → `under_integration`, merged PR → `integrated`; issue → `proposed`; README → by wording ("supported" vs "coming soon") |
+| 3. Enrich | One GitHub API call per repo. | GitHub stars + fork flag |
+| 4. Score confidence | Judge how cuVS-specific the match is. | **HIGH** (cuVS symbol) vs **LOW** (generic / RAFT predecessor); **strong** (real symbol or README status) vs **keyword** (bare `CAGRA`) |
+| 5. Filter & collapse | Keep the trustworthy set. | drop forks; keep HIGH-precision; the strict cut also drops keyword-only; one row per repo at its highest tier |
+
 ## Outputs
 
 - **`cuvs.db`** — every hit (table `hits`), one row per repo / source / evidence URL.
