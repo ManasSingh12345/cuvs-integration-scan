@@ -112,6 +112,7 @@ CREATE TABLE IF NOT EXISTS hits (
     first_party   INTEGER NOT NULL,
     github_stars  INTEGER,          -- repo stargazers; NULL if unknown/non-repo
     is_fork       INTEGER,          -- 1 = GitHub fork, 0 = not, NULL = unknown
+    owner_type    TEXT,             -- 'Organization' | 'User' | NULL (unknown)
     evidence_url  TEXT NOT NULL,
     note          TEXT,
     collected_at  TEXT NOT NULL,
@@ -121,16 +122,16 @@ CREATE INDEX IF NOT EXISTS idx_lib ON hits(library);
 """
 
 # Columns added after v1; ALTER them onto pre-existing DBs.
-_REPO_META_COLS = ("github_stars", "is_fork")
+_REPO_META_COLS = {"github_stars": "INTEGER", "is_fork": "INTEGER", "owner_type": "TEXT"}
 
 
 def db_connect(path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(path)
     conn.executescript(SCHEMA)
     have = {r[1] for r in conn.execute("PRAGMA table_info(hits)")}
-    for col in _REPO_META_COLS:
+    for col, coltype in _REPO_META_COLS.items():
         if col not in have:
-            conn.execute(f"ALTER TABLE hits ADD COLUMN {col} INTEGER")
+            conn.execute(f"ALTER TABLE hits ADD COLUMN {col} {coltype}")
     conn.commit()
     return conn
 
@@ -473,13 +474,15 @@ def collect_nvidia_signals() -> Iterable[Hit]:
 # fetches libraries whose github_stars is still NULL, so re-runs are cheap.
 # --------------------------------------------------------------------------- #
 def enrich_repos(conn: sqlite3.Connection, sleep: float = 0.12) -> int:
-    """Populate github_stars + is_fork for owner/repo libraries. Needs a token."""
+    """Populate github_stars + is_fork + owner_type for owner/repo libraries.
+       Needs a token. Idempotent: only fetches repos missing any of these."""
     if not os.environ.get("GITHUB_TOKEN"):
         print("[enrich] GITHUB_TOKEN not set; skipping stars/fork", file=sys.stderr)
         return 0
     libs = [
         r[0] for r in conn.execute(
-            "SELECT DISTINCT library FROM hits WHERE github_stars IS NULL"
+            "SELECT DISTINCT library FROM hits "
+            "WHERE github_stars IS NULL OR owner_type IS NULL"
         )
         if r[0] and re.fullmatch(r"[\w.-]+/[\w.-]+", r[0])
     ]
@@ -499,8 +502,9 @@ def enrich_repos(conn: sqlite3.Connection, sleep: float = 0.12) -> int:
             continue  # 404 renamed/deleted -> leave NULL
         j = r.json()
         conn.execute(
-            "UPDATE hits SET github_stars=?, is_fork=? WHERE library=?",
-            (j.get("stargazers_count"), int(bool(j.get("fork"))), lib),
+            "UPDATE hits SET github_stars=?, is_fork=?, owner_type=? WHERE library=?",
+            (j.get("stargazers_count"), int(bool(j.get("fork"))),
+             (j.get("owner") or {}).get("type"), lib),
         )
         conn.commit()
         n += 1
@@ -592,6 +596,23 @@ def _hit_is_strong(note: str, source: str) -> bool:
     return any(c in (note or "") for c in STRONG_NOTE_CUES)
 
 
+# A cuVS match inside a *bundled copy* of another library (e.g. a repo that
+# vendors faiss) is not evidence that THIS repo integrates cuVS. Drop such hits
+# from curated views, but keep the genuine upstreams themselves.
+_VENDORED_DIRS = ("/faiss/", "/third_party/", "/third-party/", "/thirdparty/",
+                  "/vendor/", "/vendored/", "/external/", "/extern/", "/submodules/")
+_UPSTREAM_WHITELIST = {"facebookresearch/faiss", "rapidsai/cuvs", "rapidsai/raft",
+                       "nvidia/cuvs", "zilliztech/knowhere"}
+
+
+def _is_vendored(evidence_url: str, library: str) -> bool:
+    """True if the match sits inside a bundled copy of another library."""
+    if (library or "").lower() in _UPSTREAM_WHITELIST:
+        return False
+    u = (evidence_url or "").lower()
+    return any(d in u for d in _VENDORED_DIRS)
+
+
 CSV_COLUMNS = ["library", "github_stars", "maturity", "first_party",
                "high_evidence_count", "sources", "example_evidence_url",
                "note", "collected_at"]
@@ -603,8 +624,11 @@ def export_csvs(conn: sqlite3.Connection, prefix: str = "cuvs_high_confidence") 
         "SELECT library, maturity, first_party, source, github_stars, "
         "evidence_url, note, collected_at FROM hits "
         "WHERE precision='HIGH' AND COALESCE(is_fork, 0) = 0 "
+        "AND owner_type = 'Organization' "
         "AND library NOT IN ('', 'unknown/unknown')"
     ):
+        if _is_vendored(url, lib):
+            continue  # match lives in a bundled copy of another lib, not this repo
         d = libs.setdefault(lib, {"library": lib, "github_stars": stars,
                                   "first_party": fp, "sources": set(),
                                   "evidence_n": 0, "rank": -1, "strong": False})
@@ -644,7 +668,7 @@ def export_csvs(conn: sqlite3.Connection, prefix: str = "cuvs_high_confidence") 
     strong = [d for d in ranked if d["strong"]]
     write(f"{prefix}.csv", ranked)
     write(f"{prefix}_strict.csv", strong)
-    print(f"[csv] {prefix}.csv: {len(ranked)} libraries (HIGH-precision, non-fork)")
+    print(f"[csv] {prefix}.csv: {len(ranked)} libraries (HIGH-precision, org-owned, non-fork)")
     print(f"[csv] {prefix}_strict.csv: {len(strong)} libraries "
           f"({len(ranked) - len(strong)} CAGRA-keyword-only dropped)")
 
@@ -660,14 +684,16 @@ def _aggregate_libraries(conn: sqlite3.Connection) -> list[dict]:
     """Collapse hits to one record per repo: highest tier, max stars, fork/1P
        flags, evidence count, source set, signal quality, best evidence link."""
     libs: dict[str, dict] = {}
-    for lib, mat, prec, fp, fork, stars, src, url, note in conn.execute(
+    for lib, mat, prec, fp, fork, stars, otype, src, url, note in conn.execute(
         "SELECT library, maturity, precision, first_party, is_fork, "
-        "github_stars, source, evidence_url, note FROM hits"
+        "github_stars, owner_type, source, evidence_url, note FROM hits"
     ):
+        if _is_vendored(url, lib):
+            continue  # match lives in a bundled copy of another lib, not this repo
         d = libs.get(lib)
         if d is None:
             d = libs[lib] = {"lib": lib, "tier": mat, "stars": None, "fp": False,
-                             "fork": False, "quality": "weak", "ev": 0,
+                             "fork": False, "org": False, "quality": "weak", "ev": 0,
                              "sources": set(), "url": url, "note": note or "",
                              "_score": (-1, -1, -1)}
         d["ev"] += 1
@@ -678,6 +704,8 @@ def _aggregate_libraries(conn: sqlite3.Connection) -> list[dict]:
             d["fp"] = True
         if fork == 1:
             d["fork"] = True
+        if otype:
+            d["org"] = (otype == "Organization")
         strong = prec == "HIGH" and _hit_is_strong(note, src)
         if strong:
             d["quality"] = "strong"
@@ -774,6 +802,7 @@ a{color:#1a6fd0;text-decoration:none}a:hover{text-decoration:underline}
     <label>Sort<select id="sort"><option value="stars">Stars &darr;</option><option value="name">Name A&ndash;Z</option><option value="tier">Tier</option><option value="ev">Evidence &darr;</option></select></label>
     <label class="chk"><input type="checkbox" id="strong" checked> Strong signal only</label>
     <label class="chk"><input type="checkbox" id="nofork" checked> Hide forks</label>
+    <label class="chk"><input type="checkbox" id="orgonly" checked> Organizations only</label>
     <button class="reset" id="reset">Reset</button>
   </div>
   <p class="count" id="count"></p>
@@ -784,7 +813,7 @@ const DATA = __DATA__;
 const TIERLABEL={integrated:"integrated",under_integration:"under integration",proposed:"proposed"};
 const TIERRANK={integrated:2,under_integration:1,proposed:0};
 const BCLASS={integrated:"b-integrated",under_integration:"b-under",proposed:"b-proposed"};
-const DEF=()=>({q:"",tiers:new Set(["integrated","under_integration","proposed"]),party:"all",stars:0,sort:"stars",strong:true,nofork:true});
+const DEF=()=>({q:"",tiers:new Set(["integrated","under_integration","proposed"]),party:"all",stars:0,sort:"stars",strong:true,nofork:true,orgonly:true});
 let st=DEF();
 function fmt(n){return n==null?"—":n.toLocaleString()}
 function esc(s){return String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]))}
@@ -793,6 +822,7 @@ function apply(){
     if(!st.tiers.has(d.tier))return false;
     if(st.strong&&d.quality!=="strong")return false;
     if(st.nofork&&d.fork)return false;
+    if(st.orgonly&&!d.org)return false;
     if(st.party==="fp"&&!d.fp)return false;
     if(st.party==="tp"&&d.fp)return false;
     if((d.stars||0)<st.stars)return false;
@@ -840,6 +870,7 @@ document.getElementById("stars").addEventListener("change",e=>{st.stars=+e.targe
 document.getElementById("sort").addEventListener("change",e=>{st.sort=e.target.value;render();});
 document.getElementById("strong").addEventListener("change",e=>{st.strong=e.target.checked;render();});
 document.getElementById("nofork").addEventListener("change",e=>{st.nofork=e.target.checked;render();});
+document.getElementById("orgonly").addEventListener("change",e=>{st.orgonly=e.target.checked;render();});
 document.querySelectorAll("#tiers .pill").forEach(p=>p.addEventListener("click",()=>{
   const t=p.dataset.t;
   if(st.tiers.has(t)){st.tiers.delete(t);p.classList.remove("on");}else{st.tiers.add(t);p.classList.add("on");}
@@ -850,6 +881,7 @@ document.getElementById("reset").addEventListener("click",()=>{
   document.getElementById("q").value="";document.getElementById("party").value="all";
   document.getElementById("stars").value="0";document.getElementById("sort").value="stars";
   document.getElementById("strong").checked=true;document.getElementById("nofork").checked=true;
+  document.getElementById("orgonly").checked=true;
   document.querySelectorAll("#tiers .pill").forEach(p=>p.classList.add("on"));
   render();
 });
