@@ -1,0 +1,38 @@
+name: cuVS Integration Scan
+
+on:
+  schedule:
+    - cron: '0 6 * * *'   # 6am UTC daily
+  workflow_dispatch:        # allow manual trigger from Actions tab
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Run scanner
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          python cuvs_scan.py --db cuvs.db --no-stubs
+          cp cuvs_dashboard.html results/cuvs_dashboard.html
+          cp cuvs_high_confidence.csv results/cuvs_high_confidence.csv
+
+      - name: Commit & push dashboard
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add results/cuvs_dashboard.html results/cuvs_high_confidence.csv
+          git diff --staged --quiet || git commit -m "dashboard: auto-refresh $(date -u +%Y-%m-%d)"
+          git push
