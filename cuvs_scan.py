@@ -2,20 +2,6 @@
 """
 cuvs_scan.py — Discover open-source libraries integrating NVIDIA cuVS,
 classified by maturity: proposed | under_integration | integrated.
-
-Design:
-  - LIVE collectors: GitHub (needs GITHUB_TOKEN), deps.dev (free, no auth).
-  - STUB collectors: Sourcegraph, Gitee, ANN-Benchmarks, vendor docs, NVIDIA
-    blog/GTC — return [] until you wire keys/parsers. Structure is identical
-    so you drop logic in one place.
-  - Every hit carries an evidence URL + collected_at date -> falsifiable, re-runnable.
-  - SQLite persistence with UPSERT: re-runs dedup on (library, source, evidence_url)
-    and keep the HIGHEST maturity tier ever seen per library.
-
-Usage:
-  export GITHUB_TOKEN=ghp_...
-  python cuvs_scan.py --db cuvs.db
-  python cuvs_scan.py --db cuvs.db --report        # print tiered table
 """
 
 from __future__ import annotations
@@ -33,25 +19,15 @@ from typing import Iterable
 
 import requests
 
-# --------------------------------------------------------------------------- #
-# Maturity model
-# --------------------------------------------------------------------------- #
 TIER_RANK = {"proposed": 0, "under_integration": 1, "integrated": 2}
-
 
 def higher(a: str, b: str) -> str:
     return a if TIER_RANK[a] >= TIER_RANK[b] else b
 
-
-# --------------------------------------------------------------------------- #
-# Query surface (broadened). Precision flag: HIGH = cuVS-specific, LOW = needs
-# manual confirm before trusting the "integrated" tier.
-# --------------------------------------------------------------------------- #
 @dataclass(frozen=True)
 class Term:
     q: str
-    precision: str  # "HIGH" | "LOW"
-
+    precision: str
 
 CODE_TERMS = [
     Term("import cuvs", "HIGH"),
@@ -63,8 +39,8 @@ CODE_TERMS = [
     Term("cuvs-cu12", "HIGH"),
     Term("cuvs-cu11", "HIGH"),
     Term("pylibcuvs", "HIGH"),
-    Term("CAGRA", "HIGH"),          # cuVS-specific algorithm name
-    Term("raft::neighbors", "LOW"), # predecessor / migration candidate
+    Term("CAGRA", "HIGH"),
+    Term("raft::neighbors", "LOW"),
     Term("pylibraft", "LOW"),
     Term("IVF-PQ GPU", "LOW"),
 ]
@@ -75,16 +51,13 @@ MANIFEST_FILES = [
     "build.gradle",
 ]
 
-# deps.dev reverse-dependency seeds (free API)
 DEPSDEV_SEEDS = [
     ("PYPI", "cuvs"),
     ("PYPI", "pylibcuvs"),
     ("PYPI", "cuvs-cu12"),
 ]
 
-# Repos we treat as first-party (RAPIDS/NVIDIA-maintained) for confidence flag
 FIRST_PARTY_ORGS = {"rapidsai", "nvidia", "nvidia-merlin"}
-
 
 @dataclass
 class Hit:
@@ -95,14 +68,8 @@ class Hit:
     first_party: bool
     evidence_url: str
     note: str = ""
-    collected_at: str = field(
-        default_factory=lambda: dt.date.today().isoformat()
-    )
+    collected_at: str = field(default_factory=lambda: dt.date.today().isoformat())
 
-
-# --------------------------------------------------------------------------- #
-# SQLite
-# --------------------------------------------------------------------------- #
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS hits (
     library       TEXT NOT NULL,
@@ -110,9 +77,9 @@ CREATE TABLE IF NOT EXISTS hits (
     maturity      TEXT NOT NULL,
     precision     TEXT NOT NULL,
     first_party   INTEGER NOT NULL,
-    github_stars  INTEGER,          -- repo stargazers; NULL if unknown/non-repo
-    is_fork       INTEGER,          -- 1 = GitHub fork, 0 = not, NULL = unknown
-    owner_type    TEXT,             -- 'Organization' | 'User' | NULL (unknown)
+    github_stars  INTEGER,
+    is_fork       INTEGER,
+    owner_type    TEXT,
     evidence_url  TEXT NOT NULL,
     note          TEXT,
     collected_at  TEXT NOT NULL,
@@ -121,9 +88,7 @@ CREATE TABLE IF NOT EXISTS hits (
 CREATE INDEX IF NOT EXISTS idx_lib ON hits(library);
 """
 
-# Columns added after v1; ALTER them onto pre-existing DBs.
 _REPO_META_COLS = {"github_stars": "INTEGER", "is_fork": "INTEGER", "owner_type": "TEXT"}
-
 
 def db_connect(path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(path)
@@ -135,9 +100,7 @@ def db_connect(path: str) -> sqlite3.Connection:
     conn.commit()
     return conn
 
-
 def upsert(conn: sqlite3.Connection, h: Hit) -> None:
-    # Dedup on PK; on conflict keep the higher maturity tier.
     cur = conn.execute(
         "SELECT maturity FROM hits WHERE library=? AND source=? AND evidence_url=?",
         (h.library, h.source, h.evidence_url),
@@ -152,7 +115,6 @@ def upsert(conn: sqlite3.Connection, h: Hit) -> None:
              h.library, h.source, h.evidence_url),
         )
     else:
-        # github_stars / is_fork are filled later by enrich_repos().
         conn.execute(
             "INSERT INTO hits "
             "(library, source, maturity, precision, first_party, "
@@ -163,12 +125,7 @@ def upsert(conn: sqlite3.Connection, h: Hit) -> None:
         )
     conn.commit()
 
-
-# --------------------------------------------------------------------------- #
-# Collectors  (each yields Hit objects)
-# --------------------------------------------------------------------------- #
 GITHUB_API = "https://api.github.com"
-
 
 def _gh_headers() -> dict:
     tok = os.environ.get("GITHUB_TOKEN")
@@ -177,39 +134,28 @@ def _gh_headers() -> dict:
     return {"Authorization": f"Bearer {tok}",
             "Accept": "application/vnd.github+json"}
 
-
 def _repo_full_name(item: dict) -> str:
-    # code-search item -> repository.full_name; issue item -> parse repository_url
     if "repository" in item:
         return item["repository"]["full_name"]
     m = re.search(r"repos/([^/]+/[^/]+)$", item.get("repository_url", ""))
     return m.group(1) if m else "unknown/unknown"
 
-
-# Request matched snippets so we can reject substring collisions post-hoc.
 _TEXT_MATCH_ACCEPT = "application/vnd.github.text-match+json"
 
-
 def _match_is_genuine(term: str, item: dict) -> bool:
-    """Reject substring collisions (e.g. 'libcuvs' matching 'libcuvslam' in
-       nvidia-isaac/cuVSLAM). The core token must not run straight into more
-       letters — 'libcuvs', '/cuvs', 'cuvs-cu12', 'cuvs::' pass; 'cuvslam' fails.
-       Verifies against the search API's text_matches fragments."""
     tl = term.lower()
     core = ("cuvs" if "cuvs" in tl else
             "cagra" if "cagra" in tl else
             "raft" if "raft" in tl else None)
     if core is None:
-        return True  # nothing collision-prone to guard (e.g. 'IVF-PQ GPU')
+        return True
     frags = [m.get("fragment", "") for m in item.get("text_matches", [])]
     if not frags:
-        return True  # no fragment metadata -> keep (favor recall over precision)
+        return True
     pat = re.compile(core + r"(?![A-Za-z])", re.IGNORECASE)
     return any(pat.search(f) for f in frags)
 
-
 def collect_github_code(terms: Iterable[Term], sleep: float = 6.0) -> Iterable[Hit]:
-    """GitHub code search -> INTEGRATED (symbol present on a branch)."""
     headers = {**_gh_headers(), "Accept": _TEXT_MATCH_ACCEPT}
     for t in terms:
         url = f"{GITHUB_API}/search/code?q={requests.utils.quote(t.q)}&per_page=30"
@@ -228,7 +174,7 @@ def collect_github_code(terms: Iterable[Term], sleep: float = 6.0) -> Iterable[H
             continue
         for item in r.json().get("items", []):
             if not _match_is_genuine(t.q, item):
-                continue  # substring collision, e.g. libcuvs inside libcuvslam
+                continue
             full = _repo_full_name(item)
             org = full.split("/")[0].lower()
             yield Hit(
@@ -240,17 +186,12 @@ def collect_github_code(terms: Iterable[Term], sleep: float = 6.0) -> Iterable[H
                 evidence_url=item.get("html_url", f"https://github.com/{full}"),
                 note=f"code match: {t.q}",
             )
-        time.sleep(sleep)  # code search: strict secondary rate limits
+        time.sleep(sleep)
 
-
-# Signal-quality gates for issue/PR hits (see collect_github_issues_prs).
-MAINTAINER_ASSOC = {"OWNER", "MEMBER", "COLLABORATOR"}  # author speaks for the project
-SERIOUS_PR_FILES = 3   # open PR from a non-maintainer must touch >= this many files
-
+MAINTAINER_ASSOC = {"OWNER", "MEMBER", "COLLABORATOR"}
+SERIOUS_PR_FILES = 3
 
 def _pr_workload(repo: str, number: int) -> tuple[int, int] | None:
-    """Fetch (changed_files, additions) for one PR — search results omit them.
-       One extra API call; returns None if the detail can't be fetched."""
     try:
         r = requests.get(f"{GITHUB_API}/repos/{repo}/pulls/{number}",
                          headers=_gh_headers(), timeout=30)
@@ -261,80 +202,67 @@ def _pr_workload(repo: str, number: int) -> tuple[int, int] | None:
     j = r.json()
     return int(j.get("changed_files", 0)), int(j.get("additions", 0))
 
-
-def collect_github_issues_prs(terms: Iterable[Term], sleep: float = 3.0) -> Iterable[Hit]:
-    """GitHub issue/PR search, gated on author authority, PR outcome, and PR size
-       so a stranger's "sounds exciting" issue doesn't count as project intent:
-
-         merged PR                                          -> integrated
-         open PR by a maintainer, OR touching >= SERIOUS_PR_FILES files
-                                                            -> under_integration
-         maintainer-opened, still-open issue                -> proposed
-         external issues / trivial external PRs /
-             closed-unmerged PRs                            -> dropped
-    """
+def collect_github_issues_prs(terms: Iterable[Term], sleep: float = 1.5) -> Iterable[Hit]:
     headers = {**_gh_headers(), "Accept": _TEXT_MATCH_ACCEPT}
     for t in terms:
         if t.precision != "HIGH":
-            continue  # keep issue search precise
-        q = f'{t.q} in:title,body'
-        url = f"{GITHUB_API}/search/issues?q={requests.utils.quote(q)}&per_page=30"
-        try:
-            r = requests.get(url, headers=headers, timeout=30)
-        except Exception as e:
-            print(f"[github_issues] {t.q!r} error: {e}", file=sys.stderr)
             continue
-        if r.status_code != 200:
-            print(f"[github_issues] {t.q!r} -> {r.status_code}", file=sys.stderr)
-            time.sleep(sleep)
-            continue
-        for item in r.json().get("items", []):
-            if not _match_is_genuine(t.q, item):
-                continue  # substring collision, e.g. libcuvs inside libcuvslam
-            full = _repo_full_name(item)
-            org = full.split("/")[0].lower()
-            assoc = (item.get("author_association") or "NONE").upper()
-            maintainer = assoc in MAINTAINER_ASSOC
-            state = item.get("state", "open")
-            is_pr = "pull_request" in item
+        for qualifier in ("is:issue", "is:pull-request"):
+            q = f'{t.q} {qualifier} in:title,body'
+            url = f"{GITHUB_API}/search/issues?q={requests.utils.quote(q)}&per_page=30"
+            try:
+                r = requests.get(url, headers=headers, timeout=30)
+            except Exception as e:
+                print(f"[github_issues] {t.q!r} error: {e}", file=sys.stderr)
+                continue
+            if r.status_code != 200:
+                print(f"[github_issues] {t.q!r} {qualifier} -> {r.status_code}", file=sys.stderr)
+                time.sleep(sleep)
+                continue
+            for item in r.json().get("items", []):
+                if not _match_is_genuine(t.q, item):
+                    continue
+                full = _repo_full_name(item)
+                org = full.split("/")[0].lower()
+                assoc = (item.get("author_association") or "NONE").upper()
+                maintainer = assoc in MAINTAINER_ASSOC
+                state = item.get("state", "open")
+                is_pr = "pull_request" in item
 
-            if is_pr:
-                merged = bool(item.get("pull_request", {}).get("merged_at"))
-                if merged:
-                    maturity, work = "integrated", ""
-                elif state == "closed":
-                    continue  # closed without merging -> rejected/abandoned
+                if is_pr:
+                    merged = bool(item.get("pull_request", {}).get("merged_at"))
+                    if merged:
+                        maturity, work = "integrated", ""
+                    elif state == "closed":
+                        continue
+                    else:
+                        fa = _pr_workload(full, item["number"]) if item.get("number") else None
+                        n_files, adds = fa if fa else (0, 0)
+                        if not (maintainer or n_files >= SERIOUS_PR_FILES):
+                            continue
+                        maturity = "under_integration"
+                        work = f", {n_files}f/+{adds}"
+                    note = f"PR [{assoc}{work}]: {t.q}"
                 else:
-                    fa = _pr_workload(full, item["number"]) if item.get("number") else None
-                    n_files, adds = fa if fa else (0, 0)
-                    if not (maintainer or n_files >= SERIOUS_PR_FILES):
-                        continue  # external drive-by with little work -> noise
-                    maturity = "under_integration"
-                    work = f", {n_files}f/+{adds}"
-                note = f"PR [{assoc}{work}]: {t.q}"
-            else:
-                if not maintainer or state != "open":
-                    continue  # only a maintainer's open issue is real project intent
-                maturity = "proposed"
-                note = f"issue [{assoc}]: {t.q}"
+                    if not maintainer or state != "open":
+                        continue
+                    maturity = "proposed"
+                    note = f"issue [{assoc}]: {t.q}"
 
-            yield Hit(
-                library=full,
-                source="github_issue_pr",
-                maturity=maturity,
-                precision=t.precision,
-                first_party=org in FIRST_PARTY_ORGS,
-                evidence_url=item.get("html_url", ""),
-                note=note,
-            )
-        time.sleep(sleep)
-
+                yield Hit(
+                    library=full,
+                    source="github_issue_pr",
+                    maturity=maturity,
+                    precision=t.precision,
+                    first_party=org in FIRST_PARTY_ORGS,
+                    evidence_url=item.get("html_url", ""),
+                    note=note,
+                )
+            time.sleep(sleep)
 
 def collect_depsdev(seeds=DEPSDEV_SEEDS) -> Iterable[Hit]:
-    """deps.dev reverse dependents (free, no auth) -> INTEGRATED (declared dep)."""
     base = "https://api.deps.dev/v3alpha"
     for system, pkg in seeds:
-        # resolve latest version, then pull dependents
         vurl = f"{base}/systems/{system}/packages/{pkg}"
         try:
             vr = requests.get(vurl, timeout=30)
@@ -364,12 +292,6 @@ def collect_depsdev(seeds=DEPSDEV_SEEDS) -> Iterable[Hit]:
         except Exception as e:
             print(f"[depsdev] {pkg} error: {e}", file=sys.stderr)
 
-
-# --------------------------------------------------------------------------- #
-# README scan: read a CANDIDATE library's OWN README and classify how *they*
-# describe their cuVS status. Catches doc-stated intent that code search misses.
-# --------------------------------------------------------------------------- #
-# Candidate repos to inspect. Extend freely, or feed from prior hits (see run()).
 README_SEED_REPOS = [
     "milvus-io/milvus",
     "facebookresearch/faiss",
@@ -383,11 +305,8 @@ README_SEED_REPOS = [
     "kinetica/kinetica",
 ]
 
-# cuVS-relevant mention detector (case-insensitive)
 CUVS_MENTION = re.compile(r"\bcuvs\b|\bcagra\b|\bcu-?vs\b", re.IGNORECASE)
 
-# Ordered maturity cues: FIRST match wins, checked high->low so explicit
-# "coming soon" downgrades a generic "supports cuVS" mention.
 PROPOSED_CUES = re.compile(
     r"coming soon|planned|roadmap|on the roadmap|will support|"
     r"future|proposed|we intend|tracking issue|rfc",
@@ -404,23 +323,16 @@ INTEGRATED_CUES = re.compile(
     re.IGNORECASE,
 )
 
-
 def classify_readme_maturity(context: str) -> tuple[str, str]:
-    """Given text around a cuVS mention, return (maturity, matched_cue).
-       Order matters: proposed/under override a bare 'supported'."""
     if PROPOSED_CUES.search(context):
         return "proposed", PROPOSED_CUES.search(context).group(0)
     if UNDER_CUES.search(context):
         return "under_integration", UNDER_CUES.search(context).group(0)
     if INTEGRATED_CUES.search(context):
         return "integrated", INTEGRATED_CUES.search(context).group(0)
-    # Mention with no status verb -> conservative: proposed, needs confirm.
     return "proposed", "mention-only"
 
-
 def _gh_readme_text(repo: str) -> tuple[str, str] | None:
-    """Fetch decoded README via GitHub contents API (allowed domain, uses token).
-       Returns (text, html_url) or None."""
     import base64
     url = f"{GITHUB_API}/repos/{repo}/readme"
     try:
@@ -433,15 +345,13 @@ def _gh_readme_text(repo: str) -> tuple[str, str] | None:
         return None
     j = r.json()
     try:
-        text = base64.b64decode(j["content"]).decode("utf-8", errors="replace")
+        import base64 as b64
+        text = b64.b64decode(j["content"]).decode("utf-8", errors="replace")
     except Exception:
         return None
     return text, j.get("html_url", f"https://github.com/{repo}")
 
-
-def collect_readmes(repos: Iterable[str], window: int = 160,
-                    sleep: float = 1.0) -> Iterable[Hit]:
-    """Scan each repo's OWN README for cuVS status. Maturity from context cues."""
+def collect_readmes(repos: Iterable[str], window: int = 160, sleep: float = 1.0) -> Iterable[Hit]:
     for repo in repos:
         got = _gh_readme_text(repo)
         if not got:
@@ -455,7 +365,7 @@ def collect_readmes(repos: Iterable[str], window: int = 160,
             ctx = text[s:e]
             key = ctx.strip()[:80]
             if key in seen_contexts:
-                continue  # dedup near-identical mentions in same README
+                continue
             seen_contexts.add(key)
             maturity, cue = classify_readme_maturity(ctx)
             snippet = " ".join(ctx.split())[:120]
@@ -463,8 +373,6 @@ def collect_readmes(repos: Iterable[str], window: int = 160,
                 library=repo,
                 source="readme_self",
                 maturity=maturity,
-                # README self-description is a real signal but softer than a
-                # symbol import; flag LOW when it's only a bare mention.
                 precision="HIGH" if cue not in ("mention-only",) else "LOW",
                 first_party=org in FIRST_PARTY_ORGS,
                 evidence_url=url,
@@ -472,38 +380,19 @@ def collect_readmes(repos: Iterable[str], window: int = 160,
             )
         time.sleep(sleep)
 
-
-# ---- STUB collectors: wire logic later, structure ready --------------------- #
 def collect_sourcegraph(terms) -> Iterable[Hit]:
-    """STUB: Sourcegraph public search (higher volume than GH code search).
-       Needs SOURCEGRAPH_TOKEN. Return integrated hits on symbol match."""
     return iter(())
-
 
 def collect_gitee(terms) -> Iterable[Hit]:
-    """STUB: Gitee code search — critical for CN partners (Alibaba/Volcengine)."""
     return iter(())
-
 
 def collect_annbench() -> Iterable[Hit]:
-    """STUB: ANN-Benchmarks repo — entries adding cuVS/CAGRA impl -> integrated."""
     return iter(())
-
 
 def collect_nvidia_signals() -> Iterable[Hit]:
-    """STUB: cuVS README integrations list + git history, NVIDIA blog, GTC titles
-       -> proposed/under_integration leading indicators."""
     return iter(())
 
-
-# --------------------------------------------------------------------------- #
-# Repo enrichment: stars + fork flag are repo-level, so one GitHub call per
-# distinct owner/repo updates all of that library's hit rows. Idempotent — only
-# fetches libraries whose github_stars is still NULL, so re-runs are cheap.
-# --------------------------------------------------------------------------- #
 def enrich_repos(conn: sqlite3.Connection, sleep: float = 0.12) -> int:
-    """Populate github_stars + is_fork + owner_type for owner/repo libraries.
-       Needs a token. Idempotent: only fetches repos missing any of these."""
     if not os.environ.get("GITHUB_TOKEN"):
         print("[enrich] GITHUB_TOKEN not set; skipping stars/fork", file=sys.stderr)
         return 0
@@ -527,7 +416,7 @@ def enrich_repos(conn: sqlite3.Connection, sleep: float = 0.12) -> int:
             time.sleep(30)
             continue
         if r.status_code != 200:
-            continue  # 404 renamed/deleted -> leave NULL
+            continue
         j = r.json()
         conn.execute(
             "UPDATE hits SET github_stars=?, is_fork=?, owner_type=? WHERE library=?",
@@ -539,7 +428,6 @@ def enrich_repos(conn: sqlite3.Connection, sleep: float = 0.12) -> int:
         time.sleep(sleep)
     print(f"[enrich] updated {n} repos")
     return n
-
 
 LIVE_COLLECTORS = [
     ("github_code", lambda: collect_github_code(CODE_TERMS)),
@@ -554,16 +442,11 @@ STUB_COLLECTORS = [
     ("nvidia_signals", lambda: collect_nvidia_signals()),
 ]
 
-
-# --------------------------------------------------------------------------- #
-# Orchestration + report
-# --------------------------------------------------------------------------- #
-def run(conn: sqlite3.Connection, include_stubs: bool = True,
-        readme_followup: bool = True) -> int:
+def run(conn: sqlite3.Connection, include_stubs: bool = True, readme_followup: bool = True) -> int:
     n = 0
     collectors = LIVE_COLLECTORS + (STUB_COLLECTORS if include_stubs else [])
     for name, factory in collectors:
-        print(f"[run] collector={name}")
+        print(f"[run] collector={name}", flush=True)
         try:
             for hit in factory():
                 upsert(conn, hit)
@@ -571,8 +454,6 @@ def run(conn: sqlite3.Connection, include_stubs: bool = True,
         except Exception as e:
             print(f"[run] {name} failed: {e}", file=sys.stderr)
 
-    # Second pass: scan the OWN README of every owner/repo-shaped library that
-    # other collectors surfaced but that we didn't already README-scan.
     if readme_followup and os.environ.get("GITHUB_TOKEN"):
         already = {r[0] for r in conn.execute(
             "SELECT DISTINCT library FROM hits WHERE source='readme_self'"
@@ -585,7 +466,7 @@ def run(conn: sqlite3.Connection, include_stubs: bool = True,
             if re.fullmatch(r"[\w.-]+/[\w.-]+", r[0]) and r[0] not in already
         ]
         if discovered:
-            print(f"[run] readme_followup over {len(discovered)} discovered repos")
+            print(f"[run] readme_followup over {len(discovered)} discovered repos", flush=True)
             try:
                 for hit in collect_readmes(discovered):
                     upsert(conn, hit)
@@ -593,58 +474,34 @@ def run(conn: sqlite3.Connection, include_stubs: bool = True,
             except Exception as e:
                 print(f"[run] readme_followup failed: {e}", file=sys.stderr)
 
-    # Repo-level enrichment (stars + fork) once all hits are in.
-    print("[run] enriching repos with stars + fork flag")
+    print("[run] enriching repos with stars + fork flag", flush=True)
     enrich_repos(conn)
     return n
 
-
-# --------------------------------------------------------------------------- #
-# CSV export — priority logic
-#   1. HIGH precision only          (drop LOW predecessor/mention noise)
-#   2. non-fork                     (is_fork != 1)
-#   3. one row per library at its HIGHEST maturity tier
-#   4. sort by tier, then stars desc, then name
-#   5. <prefix>.csv keeps every qualifying library; <prefix>_strict.csv keeps
-#      only libraries with a STRONG signal (real cuVS symbol / README status /
-#      non-CAGRA PR), dropping bare-"CAGRA"-keyword collisions.
-# --------------------------------------------------------------------------- #
-# Symbol cues that mean genuine cuVS usage rather than a keyword collision.
-STRONG_NOTE_CUES = (
-    "find_package(cuvs", "libcuvs", "import cuvs", "from cuvs", "cuvs::",
-    '#include "cuvs', "pylibcuvs", "cuvs-cu12", "cuvs-cu11",
-)
-
-
-def _hit_is_strong(note: str, source: str) -> bool:
-    """A README self-status is strong (LOW mention-only is already filtered out);
-       otherwise require a concrete cuVS symbol in the note (excludes bare CAGRA)."""
-    if source == "readme_self":
-        return True
-    return any(c in (note or "") for c in STRONG_NOTE_CUES)
-
-
-# A cuVS match inside a *bundled copy* of another library (e.g. a repo that
-# vendors faiss) is not evidence that THIS repo integrates cuVS. Drop such hits
-# from curated views, but keep the genuine upstreams themselves.
 _VENDORED_DIRS = ("/faiss/", "/third_party/", "/third-party/", "/thirdparty/",
                   "/vendor/", "/vendored/", "/external/", "/extern/", "/submodules/")
 _UPSTREAM_WHITELIST = {"facebookresearch/faiss", "rapidsai/cuvs", "rapidsai/raft",
                        "nvidia/cuvs", "zilliztech/knowhere"}
 
-
 def _is_vendored(evidence_url: str, library: str) -> bool:
-    """True if the match sits inside a bundled copy of another library."""
     if (library or "").lower() in _UPSTREAM_WHITELIST:
         return False
     u = (evidence_url or "").lower()
     return any(d in u for d in _VENDORED_DIRS)
 
+STRONG_NOTE_CUES = (
+    "find_package(cuvs", "libcuvs", "import cuvs", "from cuvs", "cuvs::",
+    '#include "cuvs', "pylibcuvs", "cuvs-cu12", "cuvs-cu11",
+)
+
+def _hit_is_strong(note: str, source: str) -> bool:
+    if source == "readme_self":
+        return True
+    return any(c in (note or "") for c in STRONG_NOTE_CUES)
 
 CSV_COLUMNS = ["library", "github_stars", "maturity", "first_party",
                "high_evidence_count", "sources", "example_evidence_url",
                "note", "collected_at"]
-
 
 def export_csvs(conn: sqlite3.Connection, prefix: str = "cuvs_high_confidence") -> None:
     libs: dict[str, dict] = {}
@@ -656,7 +513,7 @@ def export_csvs(conn: sqlite3.Connection, prefix: str = "cuvs_high_confidence") 
         "AND library NOT IN ('', 'unknown/unknown')"
     ):
         if _is_vendored(url, lib):
-            continue  # match lives in a bundled copy of another lib, not this repo
+            continue
         d = libs.setdefault(lib, {"library": lib, "github_stars": stars,
                                   "first_party": fp, "sources": set(),
                                   "evidence_n": 0, "rank": -1, "strong": False})
@@ -665,9 +522,7 @@ def export_csvs(conn: sqlite3.Connection, prefix: str = "cuvs_high_confidence") 
         d["strong"] = d["strong"] or _hit_is_strong(note, src)
         if stars is not None:
             d["github_stars"] = stars
-        # keep the highest tier; prefer a code hit as the representative URL
-        if TIER_RANK[mat] > d["rank"] or (TIER_RANK[mat] == d["rank"]
-                                          and src == "github_code"):
+        if TIER_RANK[mat] > d["rank"] or (TIER_RANK[mat] == d["rank"] and src == "github_code"):
             d.update(maturity=mat, rank=TIER_RANK[mat], first_party=fp,
                      example_evidence_url=url, note=note, collected_at=cat)
 
@@ -675,8 +530,6 @@ def export_csvs(conn: sqlite3.Connection, prefix: str = "cuvs_high_confidence") 
         stars = d["github_stars"] if isinstance(d["github_stars"], int) else -1
         return (-d["rank"], -stars, d["library"])
 
-    # CAGRA corroborates but can't stand alone: keep only repos with a real
-    # cuVS signal (for HIGH hits, that is exactly d["strong"]).
     ranked = sorted((d for d in libs.values() if d["strong"]), key=sort_key)
 
     def write(path: str, rows: list[dict]) -> None:
@@ -696,27 +549,18 @@ def export_csvs(conn: sqlite3.Connection, prefix: str = "cuvs_high_confidence") 
                 ])
 
     write(f"{prefix}.csv", ranked)
-    print(f"[csv] {prefix}.csv: {len(ranked)} repos "
-          f"(org-owned, HIGH-precision, non-fork, real cuVS signal; CAGRA-only excluded)")
+    print(f"[csv] {prefix}.csv: {len(ranked)} repos")
 
-
-# --------------------------------------------------------------------------- #
-# Interactive HTML dashboard
-# --------------------------------------------------------------------------- #
-# Which source gives the "representative" evidence link when a repo has several.
 _SRC_PRIORITY = {"github_code": 3, "readme_self": 2, "github_issue_pr": 1, "depsdev": 0}
 
-
 def _aggregate_libraries(conn: sqlite3.Connection) -> list[dict]:
-    """Collapse hits to one record per repo: highest tier, max stars, fork/1P
-       flags, evidence count, source set, signal quality, best evidence link."""
     libs: dict[str, dict] = {}
     for lib, mat, prec, fp, fork, stars, otype, src, url, note in conn.execute(
         "SELECT library, maturity, precision, first_party, is_fork, "
         "github_stars, owner_type, source, evidence_url, note FROM hits"
     ):
         if _is_vendored(url, lib):
-            continue  # match lives in a bundled copy of another lib, not this repo
+            continue
         d = libs.get(lib)
         if d is None:
             d = libs[lib] = {"lib": lib, "tier": mat, "stars": None, "fp": False,
@@ -736,7 +580,6 @@ def _aggregate_libraries(conn: sqlite3.Connection) -> list[dict]:
         strong = prec == "HIGH" and _hit_is_strong(note, src)
         if strong:
             d["quality"] = "strong"
-        # CAGRA corroborates but can't stand alone: repo needs >=1 non-CAGRA signal
         if strong or "cagra" not in (note or "").lower():
             d["_hascore"] = True
         score = (TIER_RANK[mat], 1 if strong else 0, _SRC_PRIORITY.get(src, 0))
@@ -746,17 +589,15 @@ def _aggregate_libraries(conn: sqlite3.Connection) -> list[dict]:
     for d in libs.values():
         d.pop("_score", None)
         if not d.pop("_hascore", False):
-            continue  # sole signal was a bare CAGRA keyword -> drop the repo
+            continue
         d["sources"] = sorted(d["sources"])
         out.append(d)
     return out
-
 
 def export_dashboard(conn: sqlite3.Connection, path: str = "cuvs_dashboard.html") -> None:
     libs = _aggregate_libraries(conn)
     libs.sort(key=lambda d: (-(d["stars"] or -1), d["lib"]))
     data = json.dumps(libs, ensure_ascii=False)
-    # keep the JSON safe to embed inside a <script> element
     data = data.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
     html = (_DASHBOARD_TEMPLATE
             .replace("__DATA__", data)
@@ -765,7 +606,6 @@ def export_dashboard(conn: sqlite3.Connection, path: str = "cuvs_dashboard.html"
     with open(path, "w", encoding="utf-8") as f:
         f.write(html)
     print(f"[dashboard] {path}: {len(libs)} repositories")
-
 
 _DASHBOARD_TEMPLATE = r"""<!DOCTYPE html>
 <html lang="en">
@@ -831,7 +671,7 @@ a{color:#1a6fd0;text-decoration:none}a:hover{text-decoration:underline}
       </div></div>
     <label>Party<select id="party"><option value="all">All</option><option value="fp">First-party (NVIDIA/RAPIDS)</option><option value="tp">Third-party</option></select></label>
     <label>Min stars<select id="stars"><option value="0">Any</option><option value="100">100+</option><option value="1000">1,000+</option><option value="10000">10,000+</option></select></label>
-    <label>Sort<select id="sort"><option value="stars">Stars &darr;</option><option value="name">Name A&ndash;Z</option><option value="tier">Tier</option><option value="ev">Evidence &darr;</option></select></label>
+    <label>Sort<select id="sort"><option value="stars">Stars ↓</option><option value="name">Name A–Z</option><option value="tier">Tier</option><option value="ev">Evidence ↓</option></select></label>
     <label class="chk"><input type="checkbox" id="strong" checked> Strong signal only</label>
     <label class="chk"><input type="checkbox" id="nofork" checked> Hide forks</label>
     <label class="chk"><input type="checkbox" id="orgonly" checked> Organizations only</label>
@@ -892,7 +732,7 @@ function render(){
       '<td class="stars">'+(d.stars==null?'<span class="dim">—</span>':'★ '+fmt(d.stars))+'</td>'+
       '<td>'+d.ev+'</td>'+
       '<td class="sources-col">'+src+'</td>'+
-      '<td class="note-col">'+sig+' &middot; <a href="'+esc(d.url)+'" target="_blank" rel="noopener">evidence &#8599;</a></td></tr>';
+      '<td class="note-col">'+sig+' · <a href="'+esc(d.url)+'" target="_blank" rel="noopener">evidence ↗</a></td></tr>';
   }
   w.innerHTML=h+'</tbody></table>';
 }
@@ -923,9 +763,7 @@ render();
 </html>
 """
 
-
 def report(conn: sqlite3.Connection) -> None:
-    # pick highest tier per library across its source rows
     best: dict[str, tuple] = {}
     for lib, mat, prec, fp, stars, n, url in conn.execute(
         "SELECT library, maturity, precision, first_party, github_stars, "
@@ -943,23 +781,15 @@ def report(conn: sqlite3.Connection) -> None:
     for lib, (mat, prec, fp, stars, n, url) in ranked:
         s = str(stars) if stars is not None else "-"
         print(f"{lib[:40]:40} {mat:18} {prec:5} {'Y' if fp else 'N':3} {s:>7} {url}")
-    print(f"\n{len(ranked)} libraries. "
-          f"Confirm LOW-precision hits before trusting 'integrated'.")
-
+    print(f"\n{len(ranked)} libraries.")
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--db", default="cuvs.db")
-    ap.add_argument("--report", action="store_true", help="print table and exit")
-    ap.add_argument("--csv", nargs="?", const="cuvs_high_confidence", default=None,
-                    metavar="PREFIX",
-                    help="write priority CSVs (<PREFIX>.csv + <PREFIX>_strict.csv) "
-                         "from the existing DB and exit")
-    ap.add_argument("--enrich", action="store_true",
-                    help="fetch stars/fork for the existing DB and exit")
-    ap.add_argument("--dashboard", nargs="?", const="cuvs_dashboard.html",
-                    default=None, metavar="PATH",
-                    help="write an interactive HTML dashboard from the DB and exit")
+    ap.add_argument("--report", action="store_true")
+    ap.add_argument("--csv", nargs="?", const="cuvs_high_confidence", default=None, metavar="PREFIX")
+    ap.add_argument("--enrich", action="store_true")
+    ap.add_argument("--dashboard", nargs="?", const="cuvs_dashboard.html", default=None, metavar="PATH")
     ap.add_argument("--no-stubs", action="store_true")
     args = ap.parse_args()
 
@@ -971,7 +801,7 @@ def main():
         enrich_repos(conn)
         return
     if args.csv is not None:
-        enrich_repos(conn)          # fill any missing stars/fork first (idempotent)
+        enrich_repos(conn)
         export_csvs(conn, args.csv)
         return
     if args.dashboard is not None:
@@ -983,7 +813,6 @@ def main():
     report(conn)
     export_csvs(conn)
     export_dashboard(conn)
-
 
 if __name__ == "__main__":
     main()
