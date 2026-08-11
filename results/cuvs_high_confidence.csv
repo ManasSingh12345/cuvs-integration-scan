@@ -1,12 +1,12 @@
 library,github_stars,maturity,first_party,high_evidence_count,sources,example_evidence_url,note,collected_at
 elastic/elasticsearch,77821,integrated,no,1,github_issue_pr,https://github.com/elastic/elasticsearch/pull/149076,PR [CONTRIBUTOR]: libcuvs,2026-08-11
-facebookresearch/faiss,40708,integrated,no,27,github_code|github_issue_pr,https://github.com/facebookresearch/faiss/blob/a424dcb809fd725c44dd976d9063febd4837d16a/CHANGELOG.md,code match: libcuvs,2026-08-11
+facebookresearch/faiss,40710,integrated,no,27,github_code|github_issue_pr,https://github.com/facebookresearch/faiss/blob/a424dcb809fd725c44dd976d9063febd4837d16a/CHANGELOG.md,code match: libcuvs,2026-08-11
 lance-format/lance,6926,integrated,no,3,github_issue_pr,https://github.com/lance-format/lance/pull/2932,PR [CONTRIBUTOR]: cuvs-cu11,2026-08-11
 NVIDIA/cuml,5250,integrated,yes,2,github_issue_pr,https://github.com/NVIDIA/cuml/pull/8250,PR [CONTRIBUTOR]: libcuvs,2026-08-11
 NVIDIA/GenerativeAIExamples,4144,integrated,yes,3,github_code,https://github.com/NVIDIA/GenerativeAIExamples/blob/20247d149b72db926bd86651ffa522f0e78e20d4/community/Azure-Serverless-GPU-Embedding/Dockerfile.interact,code match: cuvs-cu11,2026-08-11
 microsoft/PhiCookBook,3785,integrated,no,1,github_code,https://github.com/microsoft/PhiCookBook/blob/314476fbe6f3a6e92a3c43f1584609e6d41754a3/translations/tr/md/02.Application/10.ReasoningVision/Phi_4_reasoning_vision_15b_Math.ipynb,code match: libcuvs,2026-08-11
 rapidsai/cugraph,2216,integrated,yes,4,github_issue_pr,https://github.com/rapidsai/cugraph/pull/5479,PR [MEMBER]: find_package(cuvs,2026-08-11
-matrixorigin/matrixone,1875,integrated,no,2,github_code,https://github.com/matrixorigin/matrixone/blob/8c6ada2a58641046ee30f703c2473b4b02430792/cgo/README.md,code match: from cuvs,2026-08-11
+matrixorigin/matrixone,1875,integrated,no,2,github_code,https://github.com/matrixorigin/matrixone/blob/5478ab71c211168420f3717d89db7959d0f44b92/cgo/README.md,code match: from cuvs,2026-08-11
 NVIDIA/raft,1036,integrated,yes,2,github_issue_pr|readme_self,https://github.com/NVIDIA/raft/pull/3083,PR [CONTRIBUTOR]: libcuvs,2026-08-11
 weaviate/recipes,942,integrated,no,2,github_code,https://github.com/weaviate/recipes/blob/a5250c93a7e0a5bf4187f004ae25d178daf44632/integrations/cloud-hyperscalers/nvidia/RAPIDS/cuVS-Modal.py,code match: cuvs-cu12,2026-08-11
 NVIDIA/cuvs,832,integrated,yes,45,github_code|github_issue_pr,https://github.com/NVIDIA/cuvs/blob/abfb8b91c9f9bda1e568265b1d01b36250f43a8d/build.sh,code match: pylibcuvs,2026-08-11
