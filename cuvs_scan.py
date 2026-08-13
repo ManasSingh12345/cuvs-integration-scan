@@ -397,44 +397,81 @@ def list_repo_branches(repo: str, sleep: float = 0.12) -> list[tuple[str, bool]]
         return []
 
 
+_BRANCH_TARGET_EXTS  = {".py", ".cpp", ".hpp", ".h", ".cmake", ".txt", ".toml", ".yaml", ".yml", ".md"}
+_BRANCH_TARGET_NAMES = {"cmakelists.txt", "requirements.txt", "pyproject.toml", "setup.py", "environment.yml"}
+
 def collect_github_code_on_branch(
     repo: str,
     branch: str,
     terms: Iterable[Term],
-    sleep: float = 2.0,
+    sleep: float = 0.12,
 ) -> Iterable[Hit]:
-    """Search for cuVS terms on a specific non-default branch."""
-    headers = {**_gh_headers(), "Accept": _TEXT_MATCH_ACCEPT}
+    """
+    Search for cuVS terms on a specific non-default branch using the
+    Trees + Contents API (GitHub code search only indexes the default branch).
+    """
+    import base64 as _b64
+    headers = _gh_headers()
     org = repo.split("/")[0].lower()
-    for t in terms:
-        if t.precision != "HIGH":
-            continue
-        q = f"{t.q} repo:{repo} ref:{branch}"
-        url = f"{GITHUB_API}/search/code?q={requests.utils.quote(q)}&per_page=10"
+    term_list = [t for t in terms if t.precision == "HIGH"]
+    raw_terms = [t.q.lower() for t in term_list]
+
+    def _is_target(path: str) -> bool:
+        p = path.lower()
+        name = p.split("/")[-1]
+        ext = "." + name.rsplit(".", 1)[-1] if "." in name else ""
+        return ext in _BRANCH_TARGET_EXTS or name in _BRANCH_TARGET_NAMES
+
+    # 1. Get full recursive file tree for this branch
+    try:
+        r = requests.get(
+            f"{GITHUB_API}/repos/{repo}/git/trees/{branch}?recursive=1",
+            headers=headers, timeout=30,
+        )
+    except Exception as e:
+        print(f"[branch_code] {repo}@{branch} tree error: {e}", file=sys.stderr)
+        return
+    if r.status_code != 200:
+        print(f"[branch_code] {repo}@{branch} tree -> {r.status_code}", file=sys.stderr)
+        return
+
+    blobs = [f for f in r.json().get("tree", [])
+             if f.get("type") == "blob" and _is_target(f["path"])]
+
+    # 2. Fetch each candidate file and search for cuVS terms
+    seen_terms: set[str] = set()
+    for blob in blobs:
         try:
-            r = requests.get(url, headers=headers, timeout=30)
+            rc = requests.get(
+                f"{GITHUB_API}/repos/{repo}/contents/{blob['path']}?ref={branch}",
+                headers=headers, timeout=30,
+            )
         except Exception as e:
-            print(f"[branch_code] {repo}@{branch} {t.q!r} error: {e}", file=sys.stderr)
-            continue
-        if r.status_code == 403:
-            print(f"[branch_code] rate-limited; backing off 30s", file=sys.stderr)
-            time.sleep(30)
-            continue
-        if r.status_code != 200:
+            print(f"[branch_code] {repo}@{branch} {blob['path']} error: {e}", file=sys.stderr)
             time.sleep(sleep)
             continue
-        for item in r.json().get("items", []):
-            if not _match_is_genuine(t.q, item):
-                continue
-            yield Hit(
-                library=repo,
-                source="github_code_branch",
-                maturity="integrated",
-                precision=t.precision,
-                first_party=org in FIRST_PARTY_ORGS,
-                evidence_url=item.get("html_url", f"https://github.com/{repo}/tree/{branch}"),
-                note=f"branch={branch}: {t.q}",
-            )
+        if rc.status_code != 200:
+            time.sleep(sleep)
+            continue
+        try:
+            content = _b64.b64decode(rc.json().get("content", "")).decode("utf-8", errors="replace")
+        except Exception:
+            time.sleep(sleep)
+            continue
+
+        content_lower = content.lower()
+        for raw, term in zip(raw_terms, term_list):
+            if raw in content_lower and raw not in seen_terms:
+                seen_terms.add(raw)
+                yield Hit(
+                    library=repo,
+                    source="github_code_branch",
+                    maturity="integrated",
+                    precision=term.precision,
+                    first_party=org in FIRST_PARTY_ORGS,
+                    evidence_url=rc.json().get("html_url", f"https://github.com/{repo}/tree/{branch}"),
+                    note=f"branch={branch}: {term.q}",
+                )
         time.sleep(sleep)
 
 
