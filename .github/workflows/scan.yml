@@ -4,6 +4,12 @@ on:
   schedule:
     - cron: '0 6 * * *'   # 6am UTC daily
   workflow_dispatch:        # allow manual trigger from Actions tab
+    inputs:
+      scan_branches:
+        description: 'Scan non-default branches (adds ~20-40 min)'
+        required: false
+        default: 'false'
+        type: boolean
 
 jobs:
   scan:
@@ -25,7 +31,11 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
         run: |
-          python cuvs_scan.py --db cuvs.db --no-stubs
+          BRANCH_FLAG=""
+          if [ "${{ github.event.inputs.scan_branches }}" = "true" ]; then
+            BRANCH_FLAG="--scan-branches"
+          fi
+          python cuvs_scan.py --db cuvs.db --no-stubs $BRANCH_FLAG
           cp cuvs_dashboard.html results/cuvs_dashboard.html
           cp cuvs_high_confidence.csv results/cuvs_high_confidence.csv
 
