@@ -8,7 +8,7 @@ on:
       scan_branches:
         description: 'Scan non-default branches (adds ~20-40 min)'
         required: false
-        default: 'false'
+        default: 'true'
         type: boolean
 
 jobs:
@@ -31,9 +31,10 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
         run: |
-          BRANCH_FLAG=""
-          if [ "${{ github.event.inputs.scan_branches }}" = "true" ]; then
-            BRANCH_FLAG="--scan-branches"
+          # Branch scanning on by default; manual runs can override to false
+          BRANCH_FLAG="--scan-branches"
+          if [ "${{ github.event.inputs.scan_branches }}" = "false" ]; then
+            BRANCH_FLAG=""
           fi
           python cuvs_scan.py --db cuvs.db --no-stubs $BRANCH_FLAG
           cp cuvs_dashboard.html results/cuvs_dashboard.html
