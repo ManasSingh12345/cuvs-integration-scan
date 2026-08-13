@@ -45,17 +45,27 @@ CODE_TERMS = [
     Term("IVF-PQ GPU", "LOW"),
 ]
 
+# Subset used for non-default branch scanning (keep fast)
+BRANCH_SCAN_TERMS = [
+    Term("import cuvs", "HIGH"),
+    Term("from cuvs", "HIGH"),
+    Term("cuvs::", "HIGH"),
+    Term("find_package(cuvs", "HIGH"),
+    Term("libcuvs", "HIGH"),
+]
+
+# Branch name patterns worth checking (case-insensitive substring match)
+DEFAULT_BRANCH_PATTERNS = [
+    "cuvs", "gpu", "rapids", "dev", "feat", "feature",
+    "experimental", "integration", "wip", "solanet",
+]
+
 MANIFEST_FILES = [
     "setup.py", "pyproject.toml", "requirements.txt", "environment.yml",
     "meta.yaml", "CMakeLists.txt", "Cargo.toml", "go.mod", "pom.xml",
     "build.gradle",
 ]
 
-DEPSDEV_SEEDS = [
-    ("PYPI", "cuvs"),
-    ("PYPI", "pylibcuvs"),
-    ("PYPI", "cuvs-cu12"),
-]
 
 FIRST_PARTY_ORGS = {"rapidsai", "nvidia", "nvidia-merlin"}
 
@@ -260,37 +270,6 @@ def collect_github_issues_prs(terms: Iterable[Term], sleep: float = 1.5) -> Iter
                 )
             time.sleep(sleep)
 
-def collect_depsdev(seeds=DEPSDEV_SEEDS) -> Iterable[Hit]:
-    base = "https://api.deps.dev/v3alpha"
-    for system, pkg in seeds:
-        vurl = f"{base}/systems/{system}/packages/{pkg}"
-        try:
-            vr = requests.get(vurl, timeout=30)
-            if vr.status_code != 200:
-                print(f"[depsdev] {pkg} meta -> {vr.status_code}", file=sys.stderr)
-                continue
-            versions = vr.json().get("versions", [])
-            if not versions:
-                continue
-            latest = versions[-1]["versionKey"]["version"]
-            durl = (f"{base}/systems/{system}/packages/{pkg}"
-                    f"/versions/{latest}:dependents")
-            dr = requests.get(durl, timeout=30)
-            if dr.status_code != 200:
-                continue
-            for dep in dr.json().get("dependents", []):
-                name = dep.get("versionKey", {}).get("name", "unknown")
-                yield Hit(
-                    library=name,
-                    source="depsdev",
-                    maturity="integrated",
-                    precision="HIGH",
-                    first_party=False,
-                    evidence_url=f"https://deps.dev/{system.lower()}/{name}",
-                    note=f"declares dependency on {pkg}",
-                )
-        except Exception as e:
-            print(f"[depsdev] {pkg} error: {e}", file=sys.stderr)
 
 README_SEED_REPOS = [
     "milvus-io/milvus",
@@ -380,6 +359,135 @@ def collect_readmes(repos: Iterable[str], window: int = 160, sleep: float = 1.0)
             )
         time.sleep(sleep)
 
+# ---------------------------------------------------------------------------
+# Non-default branch scanning
+# ---------------------------------------------------------------------------
+
+def list_repo_branches(repo: str, sleep: float = 0.12) -> list[tuple[str, bool]]:
+    """Return list of (branch_name, is_default) tuples for a repo."""
+    try:
+        r = requests.get(f"{GITHUB_API}/repos/{repo}",
+                         headers=_gh_headers(), timeout=30)
+        if r.status_code != 200:
+            return []
+        default = r.json().get("default_branch", "main")
+
+        branches: list[tuple[str, bool]] = []
+        page = 1
+        while True:
+            br = requests.get(
+                f"{GITHUB_API}/repos/{repo}/branches?per_page=100&page={page}",
+                headers=_gh_headers(), timeout=30,
+            )
+            if br.status_code != 200:
+                break
+            data = br.json()
+            if not data:
+                break
+            for b in data:
+                name = b["name"]
+                branches.append((name, name == default))
+            if len(data) < 100:
+                break
+            page += 1
+            time.sleep(sleep)
+        return branches
+    except Exception as e:
+        print(f"[branches] {repo} error: {e}", file=sys.stderr)
+        return []
+
+
+def collect_github_code_on_branch(
+    repo: str,
+    branch: str,
+    terms: Iterable[Term],
+    sleep: float = 2.0,
+) -> Iterable[Hit]:
+    """Search for cuVS terms on a specific non-default branch."""
+    headers = {**_gh_headers(), "Accept": _TEXT_MATCH_ACCEPT}
+    org = repo.split("/")[0].lower()
+    for t in terms:
+        if t.precision != "HIGH":
+            continue
+        q = f"{t.q} repo:{repo} ref:{branch}"
+        url = f"{GITHUB_API}/search/code?q={requests.utils.quote(q)}&per_page=10"
+        try:
+            r = requests.get(url, headers=headers, timeout=30)
+        except Exception as e:
+            print(f"[branch_code] {repo}@{branch} {t.q!r} error: {e}", file=sys.stderr)
+            continue
+        if r.status_code == 403:
+            print(f"[branch_code] rate-limited; backing off 30s", file=sys.stderr)
+            time.sleep(30)
+            continue
+        if r.status_code != 200:
+            time.sleep(sleep)
+            continue
+        for item in r.json().get("items", []):
+            if not _match_is_genuine(t.q, item):
+                continue
+            yield Hit(
+                library=repo,
+                source="github_code_branch",
+                maturity="integrated",
+                precision=t.precision,
+                first_party=org in FIRST_PARTY_ORGS,
+                evidence_url=item.get("html_url", f"https://github.com/{repo}/tree/{branch}"),
+                note=f"branch={branch}: {t.q}",
+            )
+        time.sleep(sleep)
+
+
+def scan_non_default_branches(
+    conn: sqlite3.Connection,
+    terms: Iterable[Term] = BRANCH_SCAN_TERMS,
+    branch_patterns: list[str] | None = None,
+    sleep: float = 2.0,
+) -> int:
+    """
+    For every repo already in the DB, list its branches and search any
+    non-default branch whose name matches one of branch_patterns for cuVS.
+
+    Runtime note: adds ~20-40 min depending on how many interesting branches
+    are found. Run with --scan-branches; off by default.
+    """
+    if branch_patterns is None:
+        branch_patterns = DEFAULT_BRANCH_PATTERNS
+
+    repos = [
+        r[0] for r in conn.execute(
+            "SELECT DISTINCT library FROM hits "
+            "WHERE library LIKE '%/%' AND library NOT IN ('', 'unknown/unknown')"
+        )
+        if re.fullmatch(r"[\w.\-]+/[\w.\-]+", r[0])
+    ]
+
+    print(f"[branches] checking {len(repos)} repos for non-default branches "
+          f"matching {branch_patterns}")
+    n = 0
+    for repo in repos:
+        branches = list_repo_branches(repo)
+        interesting = [
+            name for name, is_default in branches
+            if not is_default
+            and any(pat in name.lower() for pat in branch_patterns)
+        ]
+        if not interesting:
+            continue
+        print(f"[branches] {repo}: scanning {interesting}")
+        for branch in interesting:
+            for hit in collect_github_code_on_branch(repo, branch, terms, sleep):
+                upsert(conn, hit)
+                n += 1
+
+    print(f"[branches] {n} new hits on non-default branches")
+    return n
+
+
+# ---------------------------------------------------------------------------
+# Stubs
+# ---------------------------------------------------------------------------
+
 def collect_sourcegraph(terms) -> Iterable[Hit]:
     return iter(())
 
@@ -401,7 +509,7 @@ def enrich_repos(conn: sqlite3.Connection, sleep: float = 0.12) -> int:
             "SELECT DISTINCT library FROM hits "
             "WHERE github_stars IS NULL OR owner_type IS NULL"
         )
-        if r[0] and re.fullmatch(r"[\w.-]+/[\w.-]+", r[0])
+        if r[0] and re.fullmatch(r"[\w.\-]+/[\w.\-]+", r[0])
     ]
     n = 0
     for lib in libs:
@@ -432,7 +540,6 @@ def enrich_repos(conn: sqlite3.Connection, sleep: float = 0.12) -> int:
 LIVE_COLLECTORS = [
     ("github_code", lambda: collect_github_code(CODE_TERMS)),
     ("github_issue_pr", lambda: collect_github_issues_prs(CODE_TERMS)),
-    ("depsdev", lambda: collect_depsdev()),
     ("readme_self", lambda: collect_readmes(README_SEED_REPOS)),
 ]
 STUB_COLLECTORS = [
@@ -442,7 +549,13 @@ STUB_COLLECTORS = [
     ("nvidia_signals", lambda: collect_nvidia_signals()),
 ]
 
-def run(conn: sqlite3.Connection, include_stubs: bool = True, readme_followup: bool = True) -> int:
+def run(
+    conn: sqlite3.Connection,
+    include_stubs: bool = True,
+    readme_followup: bool = True,
+    scan_branches: bool = False,
+    branch_patterns: list[str] | None = None,
+) -> int:
     n = 0
     collectors = LIVE_COLLECTORS + (STUB_COLLECTORS if include_stubs else [])
     for name, factory in collectors:
@@ -463,7 +576,7 @@ def run(conn: sqlite3.Connection, include_stubs: bool = True, readme_followup: b
                 "SELECT DISTINCT library FROM hits "
                 "WHERE library LIKE '%/%' AND source!='readme_self'"
             )
-            if re.fullmatch(r"[\w.-]+/[\w.-]+", r[0]) and r[0] not in already
+            if re.fullmatch(r"[\w.\-]+/[\w.\-]+", r[0]) and r[0] not in already
         ]
         if discovered:
             print(f"[run] readme_followup over {len(discovered)} discovered repos", flush=True)
@@ -476,6 +589,11 @@ def run(conn: sqlite3.Connection, include_stubs: bool = True, readme_followup: b
 
     print("[run] enriching repos with stars + fork flag", flush=True)
     enrich_repos(conn)
+
+    if scan_branches:
+        print("[run] scanning non-default branches (this may take 20-40 min) …", flush=True)
+        n += scan_non_default_branches(conn, branch_patterns=branch_patterns)
+
     return n
 
 _VENDORED_DIRS = ("/faiss/", "/third_party/", "/third-party/", "/thirdparty/",
@@ -495,7 +613,7 @@ STRONG_NOTE_CUES = (
 )
 
 def _hit_is_strong(note: str, source: str) -> bool:
-    if source == "readme_self":
+    if source in ("readme_self", "github_code_branch"):
         return True
     return any(c in (note or "") for c in STRONG_NOTE_CUES)
 
@@ -551,7 +669,12 @@ def export_csvs(conn: sqlite3.Connection, prefix: str = "cuvs_high_confidence") 
     write(f"{prefix}.csv", ranked)
     print(f"[csv] {prefix}.csv: {len(ranked)} repos")
 
-_SRC_PRIORITY = {"github_code": 3, "readme_self": 2, "github_issue_pr": 1, "depsdev": 0}
+_SRC_PRIORITY = {
+    "github_code": 3,
+    "github_code_branch": 3,  # same weight as default-branch code hits
+    "readme_self": 2,
+    "github_issue_pr": 1,
+}
 
 def _aggregate_libraries(conn: sqlite3.Connection) -> list[dict]:
     libs: dict[str, dict] = {}
@@ -563,12 +686,18 @@ def _aggregate_libraries(conn: sqlite3.Connection) -> list[dict]:
             continue
         d = libs.get(lib)
         if d is None:
-            d = libs[lib] = {"lib": lib, "tier": mat, "stars": None, "fp": False,
-                             "fork": False, "org": False, "quality": "weak", "ev": 0,
-                             "sources": set(), "url": url, "note": note or "",
-                             "_score": (-1, -1, -1), "_hascore": False}
+            d = libs[lib] = {
+                "lib": lib, "tier": mat, "stars": None, "fp": False,
+                "fork": False, "org": False, "quality": "weak", "ev": 0,
+                "sources": set(), "url": url, "note": note or "",
+                "_score": (-1, -1, -1), "_hascore": False,
+                "branch_only": True,   # flipped to False if any non-branch source found
+            }
         d["ev"] += 1
         d["sources"].add(src)
+        # If any source is NOT a branch-only hit, clear the branch_only flag
+        if src != "github_code_branch":
+            d["branch_only"] = False
         if stars is not None:
             d["stars"] = stars
         if fp:
@@ -647,6 +776,7 @@ a{color:#1a6fd0;text-decoration:none}a:hover{text-decoration:underline}
 .badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600;white-space:nowrap}
 .b-integrated{background:#eaf5d8;color:#4a7a00}.b-under{background:#fbeccf;color:#9c6410}.b-proposed{background:#eef0f3;color:#5b6672}
 .tag{display:inline-block;background:#eef0f3;color:#5b6672;border-radius:5px;padding:1px 6px;font-size:11px;margin:1px 3px 1px 0}
+.tag.branch{background:#e8f0fe;color:#1a56c4}
 .fp{background:var(--green);color:#fff}
 .stars{font-variant-numeric:tabular-nums;white-space:nowrap}
 .sig{font-size:11px;color:var(--muted)}.sig.strong{color:var(--green-d);font-weight:600}
@@ -675,6 +805,7 @@ a{color:#1a6fd0;text-decoration:none}a:hover{text-decoration:underline}
     <label class="chk"><input type="checkbox" id="strong" checked> Strong signal only</label>
     <label class="chk"><input type="checkbox" id="nofork" checked> Hide forks</label>
     <label class="chk"><input type="checkbox" id="orgonly" checked> Organizations only</label>
+    <label class="chk"><input type="checkbox" id="branchonly" checked> Include non-default branch hits</label>
     <button class="reset" id="reset">Reset</button>
   </div>
   <p class="count" id="count"></p>
@@ -685,7 +816,7 @@ const DATA = __DATA__;
 const TIERLABEL={integrated:"integrated",under_integration:"under integration",proposed:"proposed"};
 const TIERRANK={integrated:2,under_integration:1,proposed:0};
 const BCLASS={integrated:"b-integrated",under_integration:"b-under",proposed:"b-proposed"};
-const DEF=()=>({q:"",tiers:new Set(["integrated","under_integration","proposed"]),party:"all",stars:0,sort:"stars",strong:true,nofork:true,orgonly:true});
+const DEF=()=>({q:"",tiers:new Set(["integrated","under_integration","proposed"]),party:"all",stars:0,sort:"stars",strong:true,nofork:true,orgonly:true,branchonly:true});
 let st=DEF();
 function fmt(n){return n==null?"—":n.toLocaleString()}
 function esc(s){return String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]))}
@@ -699,6 +830,8 @@ function apply(){
     if(st.party==="tp"&&d.fp)return false;
     if((d.stars||0)<st.stars)return false;
     if(st.q&&!d.lib.toLowerCase().includes(st.q))return false;
+    // When toggle is OFF, hide repos discovered only on non-default branches
+    if(!st.branchonly&&d.branch_only)return false;
     return true;
   });
   rows.sort((a,b)=>{
@@ -725,9 +858,10 @@ function render(){
   let h='<table><thead><tr><th>Repository</th><th>Tier</th><th>Stars</th><th>Evidence</th><th class="sources-col">Sources</th><th class="note-col">Signal / example</th></tr></thead><tbody>';
   for(const d of rows){
     const fp=d.fp?'<span class="badge fp">1P</span> ':'';
-    const src=d.sources.map(s=>'<span class="tag">'+esc(s)+'</span>').join("");
+    const branchTag=d.branch_only?'<span class="tag branch">non-default branch</span>':'';
+    const src=d.sources.map(s=>'<span class="tag'+(s==='github_code_branch'?' branch':'')+'">'+ esc(s)+'</span>').join("");
     const sig=d.quality==="strong"?'<span class="sig strong">&#9679; strong</span>':'<span class="sig" title="keyword-only match — confirm before trusting">&#9675; keyword</span>';
-    h+='<tr><td class="lib">'+fp+'<a href="https://github.com/'+esc(d.lib)+'" target="_blank" rel="noopener">'+esc(d.lib)+'</a></td>'+
+    h+='<tr><td class="lib">'+fp+'<a href="https://github.com/'+esc(d.lib)+'" target="_blank" rel="noopener">'+esc(d.lib)+'</a>'+branchTag+'</td>'+
       '<td><span class="badge '+BCLASS[d.tier]+'">'+TIERLABEL[d.tier]+'</span></td>'+
       '<td class="stars">'+(d.stars==null?'<span class="dim">—</span>':'★ '+fmt(d.stars))+'</td>'+
       '<td>'+d.ev+'</td>'+
@@ -743,6 +877,7 @@ document.getElementById("sort").addEventListener("change",e=>{st.sort=e.target.v
 document.getElementById("strong").addEventListener("change",e=>{st.strong=e.target.checked;render();});
 document.getElementById("nofork").addEventListener("change",e=>{st.nofork=e.target.checked;render();});
 document.getElementById("orgonly").addEventListener("change",e=>{st.orgonly=e.target.checked;render();});
+document.getElementById("branchonly").addEventListener("change",e=>{st.branchonly=e.target.checked;render();});
 document.querySelectorAll("#tiers .pill").forEach(p=>p.addEventListener("click",()=>{
   const t=p.dataset.t;
   if(st.tiers.has(t)){st.tiers.delete(t);p.classList.remove("on");}else{st.tiers.add(t);p.classList.add("on");}
@@ -753,7 +888,7 @@ document.getElementById("reset").addEventListener("click",()=>{
   document.getElementById("q").value="";document.getElementById("party").value="all";
   document.getElementById("stars").value="0";document.getElementById("sort").value="stars";
   document.getElementById("strong").checked=true;document.getElementById("nofork").checked=true;
-  document.getElementById("orgonly").checked=true;
+  document.getElementById("orgonly").checked=true;document.getElementById("branchonly").checked=true;
   document.querySelectorAll("#tiers .pill").forEach(p=>p.classList.add("on"));
   render();
 });
@@ -791,6 +926,24 @@ def main():
     ap.add_argument("--enrich", action="store_true")
     ap.add_argument("--dashboard", nargs="?", const="cuvs_dashboard.html", default=None, metavar="PATH")
     ap.add_argument("--no-stubs", action="store_true")
+    ap.add_argument(
+        "--scan-branches",
+        action="store_true",
+        help=(
+            "After the main scan, check non-default branches of every discovered repo "
+            "for cuVS signals. Adds ~20-40 min to total runtime. Off by default."
+        ),
+    )
+    ap.add_argument(
+        "--branch-patterns",
+        nargs="+",
+        default=None,
+        metavar="PATTERN",
+        help=(
+            "Branch name substrings to check (case-insensitive). "
+            f"Default: {DEFAULT_BRANCH_PATTERNS}"
+        ),
+    )
     args = ap.parse_args()
 
     conn = db_connect(args.db)
@@ -808,7 +961,14 @@ def main():
         enrich_repos(conn)
         export_dashboard(conn, args.dashboard)
         return
-    total = run(conn, include_stubs=not args.no_stubs)
+
+    # Run with optional branch scanning
+    total = run(
+        conn,
+        include_stubs=not args.no_stubs,
+        scan_branches=args.scan_branches,
+        branch_patterns=args.branch_patterns,
+    )
     print(f"[done] {total} hits written to {args.db}")
     report(conn)
     export_csvs(conn)
